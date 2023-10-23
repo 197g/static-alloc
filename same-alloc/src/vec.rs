@@ -12,6 +12,20 @@ pub struct TempVec<'lt, T> {
     vec: Vec<T>,
 }
 
+/// Type-erase way for Vec with elements layout compatible to `T`.
+trait DynBufferWith<T> {
+    fn swap_internal_with(&mut self, _: &mut Vec<T>);
+}
+
+/// A compatible wrapper around a `Vec`, meant to be used as wrapping a mutable pointer to one.
+/// Here we capture that `SameLayout<T, U>` is inhabited without any indirection layer. This allows
+/// us to erase the type parameter of the original vector and swap it for a different one.
+#[repr(transparent)]
+struct Wrap<T, U> {
+    elements: alloc::vec::Vec<T>,
+    marker: SameLayout<T, U>,
+}
+
 impl<T> SameVec<T> {
     /// Create an empty buffer.
     pub fn new() -> Self {
@@ -71,20 +85,6 @@ impl<T> core::ops::DerefMut for TempVec<'_, T> {
     fn deref_mut(&mut self) -> &mut Vec<T> {
         &mut self.vec
     }
-}
-
-/// A compatible wrapper around a `Vec`, meant to be used as wrapping a mutable pointer to one.
-/// Here we capture that `SameLayout<T, U>` is inhabited without any indirection layer. This allows
-/// us to erase the type parameter of the original vector and swap it for a different one.
-#[repr(transparent)]
-struct Wrap<T, U> {
-    elements: alloc::vec::Vec<T>,
-    marker: SameLayout<T, U>,
-}
-
-/// Type-erase way for Vec with elements layout compatible to `T`.
-trait DynBufferWith<T> {
-    fn swap_internal_with(&mut self, _: &mut Vec<T>);
 }
 
 impl<T, U> Wrap<T, U> {
