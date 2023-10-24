@@ -1,12 +1,12 @@
 use alloc::vec::Vec;
 use crate::same::SameLayout;
 
-/// A dynamically sized buffer for types with the same layout.
-pub struct SameVec<T> {
+/// A dynamically sized buffer for vectors of types with the same layout.
+pub struct VecBuffer<T> {
     element_buffer: Vec<T>,
 }
 
-/// A temporary view on a SameVec, with a different element type.
+/// A temporary view on a VecBuffer, with a different element type.
 pub struct TempVec<'lt, T> {
     from: &'lt mut dyn DynBufferWith<T>,
     vec: Vec<T>,
@@ -26,10 +26,10 @@ struct Wrap<T, U> {
     marker: SameLayout<T, U>,
 }
 
-impl<T> SameVec<T> {
+impl<T> VecBuffer<T> {
     /// Create an empty buffer.
     pub fn new() -> Self {
-        SameVec::default()
+        VecBuffer::default()
     }
 
     /// Create a buffer with a pre-defined capacity.
@@ -37,7 +37,7 @@ impl<T> SameVec<T> {
     /// This buffer will not need to reallocate until the element count required for any temporary
     /// vector exceeds this number of elements.
     pub fn with_capacity(cap: usize) -> Self {
-        SameVec {
+        VecBuffer {
             element_buffer: Vec::with_capacity(cap),
         }
     }
@@ -54,16 +54,16 @@ impl<T> SameVec<T> {
     }
 }
 
-impl<T> From<Vec<T>> for SameVec<T> {
+impl<T> From<Vec<T>> for VecBuffer<T> {
     fn from(mut element_buffer: Vec<T>) -> Self {
         element_buffer.clear();
-        SameVec { element_buffer }
+        VecBuffer { element_buffer }
     }
 }
 
-impl<T> Default for SameVec<T> {
+impl<T> Default for VecBuffer<T> {
     fn default() -> Self {
-        SameVec { element_buffer: Vec::new() }
+        VecBuffer { element_buffer: Vec::new() }
     }
 }
 

@@ -34,4 +34,5 @@ extern crate alloc;
 pub mod same;
 pub mod vec;
 
-pub use vec::{SameVec, TempVec};
+pub use vec::{VecBuffer, TempVec};
+pub type SameVec<T> = VecBuffer<T>;

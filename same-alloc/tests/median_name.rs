@@ -1,4 +1,4 @@
-use buffer_vec::{same, BufferVec};
+use same_alloc::{same, BufferVec};
 
 /// Given a list of space separated names, give the 'middle' one if they were sorted.
 fn select_median_name(unparsed: &str) -> &str {
