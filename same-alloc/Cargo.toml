@@ -1,0 +1,13 @@
+[package]
+name = "same-alloc"
+version = "1.0.0-alpha"
+description = "Reuse an allocated buffer for data with different types."
+authors = ["Andreas Molzer <andreas.molzer@gmx.de>"]
+edition = "2018"
+license = "MIT OR Apache-2.0 OR Zlib"
+documentation = "https://docs.rs/same-alloc"
+repository = "https://github.com/HeroicKatora/static-alloc"
+readme = "Readme.md"
+categories = ["data-structures", "embedded", "memory-management", "no-std"]
+
+[dependencies]

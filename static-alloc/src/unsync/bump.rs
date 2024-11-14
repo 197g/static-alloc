@@ -267,6 +267,32 @@ impl MemBump {
         NonNull::new(self.data.get() as *mut u8).expect("from a reference")
     }
 
+impl MemBump {
+    /// Wrap a raw slice of memory.
+    ///
+    /// This allows bump allocating from a memory resource that has been acquired through other
+    /// means, such as but not limited to, from a chunk of RAM passed by a boot service, some slice
+    /// allocated via `alloca`, a local arena for storing related values, etc.
+    pub fn with_memory(memory: &mut [MaybeUninit<u8>]) -> Option<&mut Self> {
+        let head_layout = Layout::new::<Cell<usize>>();
+        let wasted_head = memory.as_ptr().align_offset(head_layout.align());
+        let aligned = memory.get_mut(wasted_head..)?;
+
+        let data_len = aligned.len().checked_sub(head_layout.size())?;
+        let head = aligned.as_mut_ptr() as *mut Cell<usize>;
+        // SAFETY: has room for at least `Cell<usize>` and is aligned to it.
+        // * asserted by subtracting the size from total length
+        // * and by manually aligning it according to offset.
+        unsafe { head.write(Cell::new(0)) };
+
+        let slice = ptr::slice_from_raw_parts_mut(aligned.as_mut_ptr(), data_len);
+        // SAFETY: has the declared size, and is initialized. The data tail does not need to be
+        // initialized, it only contains `MaybeUninit` data.
+        let bump = unsafe { &mut *(slice as *mut MemBump) };
+        debug_assert_eq!(bump.data.len(), data_len);
+        Some(bump)
+    }
+
     /// Allocate a region of memory.
     ///
     /// This is a safe alternative to [GlobalAlloc::alloc](#impl-GlobalAlloc).
