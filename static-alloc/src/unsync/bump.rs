@@ -251,10 +251,7 @@ impl MemBump {
     /// This is how many *bytes* can be allocated
     /// within this node.
     pub const fn capacity(&self) -> usize {
-        // Safety: just gets the pointer metadata `len` without invalidating any provenance,
-        // accepting the pointer use itself. This may be replaced by a safe `pointer::len` as soon
-        // as stable (#71146) and const which would avoid any pointer use.
-        unsafe { (*(self.data.get() as *const [UnsafeCell<u8>])).len() }
+        self.data.get().len()
     }
 
     /// Get a raw pointer to the data.
