@@ -21,9 +21,14 @@
 
 mod layout;
 mod local;
+mod ref_;
 pub mod util;
 
 pub use crate::layout::{Layout, NonZeroLayout};
-pub use crate::local::{AllocTime, Allocation, LocalAlloc};
+pub use crate::local::{AllocTime, LocalAlloc};
+#[deprecated="Use the name `LocalAllocation` instead"]
+pub use crate::local::Allocation;
+pub use crate::local::Allocation as LocalAllocation;
 #[allow(deprecated)]
 pub use crate::local::Invariant;
+pub use crate::ref_::{AllocRef, Allocation as RefAllocation};
