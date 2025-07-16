@@ -370,7 +370,9 @@ impl MemBump {
     /// # Ok::<_, static_alloc::bump::Failure>(())
     /// ```
     ///
-    /// Critically, you can rely on *other* allocations to stay valid.
+    /// Crucially, you can rely on *other* allocations to stay valid. The caller is responsible of
+    /// using the returning pointer to only refer to allocations that are not referenced through
+    /// any other way.
     ///
     /// ```
     /// # use core::mem::MaybeUninit;
@@ -387,16 +389,28 @@ impl MemBump {
     /// assert_eq!(*other_val, 0); // Not UB!
     /// # Ok::<_, static_alloc::bump::Failure>(())
     /// ```
-    pub unsafe fn get_unchecked<V>(&self, level: Level) -> Allocation<V> {
+    pub unsafe fn get_unchecked<V>(&self, level: Level) -> Allocation<'_, V> {
         debug_assert!(level.0 < self.capacity());
+
+        debug_assert!(
+            level <= self.level(),
+            "Tried to access an allocation that does not yet exist"
+        );
+
         let ptr = self.data_ptr().as_ptr();
         // Safety: guaranteed by the caller.
-        let alloc = ptr.offset(level.0 as isize) as *mut V;
+        let alloc = ptr.add(level.0);
+        let ptr = NonNull::new_unchecked(alloc).cast::<V>();
+
+        debug_assert!(
+            ptr.as_ptr().is_aligned(),
+            "Tried to access an allocation with improper type"
+        );
 
         Allocation {
             level,
             lifetime: AllocTime::default(),
-            ptr: NonNull::new_unchecked(alloc),
+            ptr,
         }
     }
 

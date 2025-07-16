@@ -585,18 +585,18 @@ impl<T> Bump<T> {
         );
 
         let base_ptr = self.storage.get() as *mut T as *mut u8;
-        let object = base_ptr.add(level.0);
-        let nonnull = NonNull::new_unchecked(object).cast::<V>();
+        let alloc = base_ptr.add(level.0);
+        let ptr = NonNull::new_unchecked(alloc).cast::<V>();
 
         debug_assert!(
-            nonnull.as_ptr().is_aligned(),
+            ptr.as_ptr().is_aligned(),
             "Tried to access an allocation with improper type"
         );
 
         Allocation {
-            ptr: nonnull,
-            lifetime: AllocTime::default(),
             level,
+            lifetime: AllocTime::default(),
+            ptr,
         }
     }
 
