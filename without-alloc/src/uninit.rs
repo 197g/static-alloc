@@ -18,9 +18,9 @@
 //! around the main interface.
 //!
 //! [wg-ref]: https://github.com/rust-lang/unsafe-code-guidelines/issues/77
-use core::{fmt, mem, slice, ptr};
 use core::alloc::Layout;
 use core::marker::PhantomData;
+use core::{fmt, mem, ptr, slice};
 
 use crate::boxed::Box;
 use unsize::CoerciblePtr;
@@ -56,7 +56,8 @@ use unsize::CoerciblePtr;
 /// structure for completely arbitrary other types. Just note that there is no integrated mechanis
 /// for calling `Drop`.
 ///
-/// ```
+#[cfg_attr(miri, doc = "```no_run")] // This can not work under miri yet, it relies on align_offset
+#[cfg_attr(not(miri), doc = "```")]
 /// use core::mem::MaybeUninit;
 /// use without_alloc::Uninit;
 ///
@@ -65,13 +66,13 @@ use unsize::CoerciblePtr;
 /// let uninit = Uninit::from_maybe_uninit(&mut alloc);
 ///
 /// // Now use the first `u32` for a counter:
-/// let mut counter = uninit.cast().unwrap();
+/// let mut counter = uninit.cast().expect("valid align");
 /// let mut tail = counter.split_to_fit();
 /// let counter: &mut u32 = counter.init(0);
 ///
 /// // And some more for a few `u64`.
 /// // Note that these are not trivially aligned, but `Uninit` does that for us.
-/// let mut values = tail.split_cast().unwrap();
+/// let mut values = tail.split_cast().expect("enough space for split");
 /// // No more use, so don't bother with `split_to_fit` and just `init`.
 /// let values: &mut [u64; 2] = values.init([0xdead, 0xbeef]);
 /// ```
@@ -143,7 +144,8 @@ impl Uninit<'_, ()> {
     ///
     /// Return `Ok` if this is possible in-bounds and `Err` if it is not.
     pub fn split_layout(&mut self, layout: Layout) -> Option<Self> {
-        self.view.split_layout(layout)
+        self.view
+            .split_layout(layout)
             .map(Self::from_presumed_mutable_view)
     }
 }
@@ -221,7 +223,8 @@ impl<'a, T> Uninit<'a, T> {
     ///
     /// Return `Ok` if the location is in-bounds and `Err` if it is out of bounds.
     pub fn split_at_byte(&mut self, at: usize) -> Option<Uninit<'a, ()>> {
-        self.view.split_at_byte(at)
+        self.view
+            .split_at_byte(at)
             .map(Uninit::from_presumed_mutable_view)
     }
 
@@ -235,7 +238,8 @@ impl<'a, T> Uninit<'a, T> {
     ///
     /// [`split_to_fit`]: #method.split_to_fit
     pub fn cast<U>(self) -> Result<Uninit<'a, U>, Self> {
-        self.view.cast()
+        self.view
+            .cast()
             .map(Uninit::from_presumed_mutable_view)
             .map_err(Self::from_presumed_mutable_view)
     }
@@ -246,7 +250,8 @@ impl<'a, T> Uninit<'a, T> {
     /// one `U` and `Err` if it is not. Note that the successful result points to unused remaining
     /// memory behind where the instances can be placed.
     pub fn cast_slice<U>(self) -> Result<Uninit<'a, [U]>, Self> {
-        self.view.cast_slice::<U>()
+        self.view
+            .cast_slice::<U>()
             .map(Uninit::from_presumed_mutable_view)
             .map_err(Self::from_presumed_mutable_view)
     }
@@ -258,7 +263,6 @@ impl<'a, T> Uninit<'a, T> {
         self.split_at_byte(mem::size_of::<T>()).unwrap()
     }
 }
-
 
 impl<'a, T: ?Sized> Uninit<'a, T> {
     /// Acquires the underlying *mut pointer.
@@ -337,7 +341,7 @@ impl<'a, T> Uninit<'a, T> {
     /// `Uninit`.
     pub fn into_maybe_uninit(self) -> &'a mut mem::MaybeUninit<T> {
         // SAFETY: MaybeUninit is a transparent wrapper and need not be initialized.
-        unsafe { &mut*(self.as_ptr() as *mut mem::MaybeUninit<T>) }
+        unsafe { &mut *(self.as_ptr() as *mut mem::MaybeUninit<T>) }
     }
 
     /// Read a value from the uninit place without moving it.
@@ -405,8 +409,7 @@ impl<'a, T> Uninit<'a, [T]> {
     ///
     /// This is the pointer equivalent of `slice::split_at`.
     pub fn split_at(&mut self, at: usize) -> Option<Self> {
-        self.view.split_at(at)
-            .map(Self::from_presumed_mutable_view)
+        self.view.split_at(at).map(Self::from_presumed_mutable_view)
     }
 
     /// Get the trailing bytes behind the slice.
@@ -456,7 +459,8 @@ impl<'a, T> Uninit<'a, [T]> {
             // SAFETY: MaybeUninit is a transparent wrapper and need not be initialized.
             slice::from_raw_parts_mut(
                 self.as_begin_ptr() as *mut mem::MaybeUninit<T>,
-                self.capacity())
+                self.capacity(),
+            )
         }
     }
 }
@@ -559,9 +563,10 @@ impl UninitView<'_, ()> {
     ///
     /// [`Uninit::split_layout`]: ./struct.Uninit.html#method.split_layout
     pub fn split_layout(&mut self, layout: Layout) -> Option<Self> {
-        let align = self.ptr.as_ptr()
-            .align_offset(layout.align());
-        let aligned_len = self.len
+        let align = self.ptr.as_ptr().align_offset(layout.align());
+
+        let aligned_len = self
+            .len
             .checked_sub(align)
             .and_then(|len| len.checked_sub(layout.size()));
 
@@ -607,7 +612,11 @@ impl<T> UninitView<'_, T> {
     /// # Panics
     /// This method panics when the type parameter is not a zero sized type.
     pub fn invent_for_zst() -> Self {
-        assert_eq!(mem::size_of::<T>(), 0, "Invented ZST uninit invoked with non-ZST");
+        assert_eq!(
+            mem::size_of::<T>(),
+            0,
+            "Invented ZST uninit invoked with non-ZST"
+        );
         let dangling = ptr::NonNull::<T>::dangling();
         // SAFETY: all bytes are within the allocation.
         let raw = unsafe { UninitView::from_memory(dangling.cast(), 0) };
@@ -659,7 +668,7 @@ impl<'a, T> UninitView<'a, T> {
         let empty = Layout::for_value::<[U]>(&[]);
 
         if !self.fits(empty) {
-            return Err(self)
+            return Err(self);
         }
 
         Ok(UninitView {
@@ -880,7 +889,8 @@ impl<'a, T> UninitView<'a, [T]> {
             // SAFETY: MaybeUninit is a transparent wrapper and need not be initialized.
             slice::from_raw_parts(
                 self.as_begin_ptr() as *const mem::MaybeUninit<T>,
-                self.capacity())
+                self.capacity(),
+            )
         }
     }
 }
@@ -930,21 +940,21 @@ impl<'a, T> From<&'a [mem::MaybeUninit<T>]> for UninitView<'a, [T]> {
 }
 
 impl<T: ?Sized> fmt::Debug for Uninit<'_, T> {
-   fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-       f.debug_tuple("Uninit")
-           .field(&self.view.ptr)
-           .field(&self.view.len)
-           .finish()
-   }
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_tuple("Uninit")
+            .field(&self.view.ptr)
+            .field(&self.view.len)
+            .finish()
+    }
 }
 
 impl<T: ?Sized> fmt::Debug for UninitView<'_, T> {
-   fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-       f.debug_tuple("UninitView")
-           .field(&self.ptr)
-           .field(&self.len)
-           .finish()
-   }
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_tuple("UninitView")
+            .field(&self.ptr)
+            .field(&self.len)
+            .finish()
+    }
 }
 
 impl<'a, T> From<Uninit<'a, T>> for UninitView<'a, T> {
@@ -954,15 +964,15 @@ impl<'a, T> From<Uninit<'a, T>> for UninitView<'a, T> {
 }
 
 impl<T> Default for Uninit<'_, [T]> {
-   fn default() -> Self {
-       Uninit::empty()
-   }
+    fn default() -> Self {
+        Uninit::empty()
+    }
 }
 
 impl<T> Default for UninitView<'_, [T]> {
-   fn default() -> Self {
-       UninitView::empty()
-   }
+    fn default() -> Self {
+        UninitView::empty()
+    }
 }
 
 impl<T: ?Sized> Clone for UninitView<'_, T> {
@@ -971,7 +981,7 @@ impl<T: ?Sized> Clone for UninitView<'_, T> {
     }
 }
 
-impl<T: ?Sized> Copy for UninitView<'_, T> { }
+impl<T: ?Sized> Copy for UninitView<'_, T> {}
 
 unsafe impl<'a, T, U: ?Sized> CoerciblePtr<U> for UninitView<'a, T> {
     type Pointee = T;
@@ -1011,12 +1021,12 @@ mod tests {
 
     #[test]
     fn lifetime_longer() {
-        fn _long<'a, T>(_: Uninit<'a, &'static T>) { }
+        fn _long<'a, T>(_: Uninit<'a, &'static T>) {}
     }
 
     #[test]
     fn lifetime_shorter() {
-        fn _short<'a, T>(_: Uninit<'static, &'a T>) { }
+        fn _short<'a, T>(_: Uninit<'static, &'a T>) {}
     }
 
     #[test]
