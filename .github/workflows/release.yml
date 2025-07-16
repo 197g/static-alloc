@@ -1,0 +1,26 @@
+name: Rust CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request_target:
+    branches: [
+      'release/*/v*'
+    ]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    container:
+      image: rust:latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Cache Cargo Dependencies
+      uses: Swatinem/rust-cache@v2
+      with:
+        cache-on-failure: true
+    - name: Check semver
+      uses: obi1kenobi/cargo-semver-checks-action@v2
+      with:
+        package: alloc-traits, static-alloc, unsize, without-alloc
+        rust-toolchain: manual
