@@ -2,7 +2,7 @@
 
 [![Crates.io Status](https://img.shields.io/crates/v/static-alloc.svg)](https://crates.io/crates/static-alloc)
 [![Docs.rs Status](https://docs.rs/static-alloc/badge.svg)](https://docs.rs/static-alloc/)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](https://raw.githubusercontent.com/HeroicKatora/static-alloc/LICENSE)
+[![License](https://img.shields.io/badge/license-Zlib-blue.svg)](https://raw.githubusercontent.com/HeroicKatora/static-alloc/master/LICENSE.ZLIB)
 [![CI Status](https://api.cirrus-ci.com/github/HeroicKatora/static-alloc.svg)](https://cirrus-ci.com/github/HeroicKatora/static-alloc)
 
 General purpose global allocator(s) with static, inline storage.
@@ -12,11 +12,10 @@ General purpose global allocator(s) with static, inline storage.
 Provides an allocator for extremely resource constrained environments where the
 only memory guaranteed is your program's image in memory as provided by the
 loader. Possible use cases are OS-less development, embedded, bootloaders (even
-stage0/1 maybe, totally untested).
+stage0/1).
 
-Possible use cases are OS-less development, embedded, bootloaders (even
-stage0/1 maybe, totally untested). The primary goals are similar to the
-standard library simplicity, and correctness, and minimal assumptions.
+The primary goals are similar to the standard library simplicity, and
+correctness, and minimal assumptions.
 
 ## Usage
 
@@ -75,7 +74,7 @@ interface that is only somewhat usable.
 
 ## Additional
 
-This project is mainly MIT licensed. You may alternatively choose [the
-Unlicense](http://unlicense.org/) instead in which case the copyright headers
-signify the parts dedicated to the public domain to the fullest possible extent
-instead.
+This project is licensed under Zlib OR Apache-2.0 OR MIT. You may alternatively
+choose [the Unlicense](http://unlicense.org/) instead in which case the
+copyright headers signify the parts dedicated to the public domain to the
+fullest possible extent instead.

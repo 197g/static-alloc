@@ -236,8 +236,8 @@ pub trait LocalAllocLeakExt<'alloc>: LocalAlloc<'alloc> {
             core::ptr::copy(val as *const _ as *const u8, uninit.as_ptr() as *mut u8, layout.size());
         }
 
-        let ptr = val as *const _ as *const T;
-        let ptr = ptr.set_ptr_value(uninit.as_ptr() as *const u8) as *mut T;
+        let ptr = val as *const _ as *mut T;
+        let ptr = uninit.as_ptr().with_metadata_of(ptr);
         Some(unsafe {
             // SAFETY: The byte copy above put the value into a valid state. Caller promises that
             // we can logically move the value.

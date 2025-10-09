@@ -416,6 +416,18 @@ impl<T> FixedVec<'_, T> {
         (all, tail)
     }
 
+    /// Get a read-only pointer, valid for the initialized and uninitialized portion of the raw
+    /// vector.
+    pub fn as_ptr(&mut self) -> *const T {
+        self.uninit.as_begin_ptr()
+    }
+
+    /// Get a mutable pointer, valid for the initialized and uninitialized portion of the raw
+    /// vector.
+    pub fn as_mut_ptr(&mut self) -> *mut T {
+        self.uninit.as_begin_ptr()
+    }
+
     fn end_mut_ptr(&mut self) -> *mut T {
         unsafe { self.as_mut_ptr().add(self.length) }
     }

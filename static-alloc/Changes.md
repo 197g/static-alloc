@@ -1,3 +1,38 @@
+# v0.2.6
+
+- Fix an unsoundness bug in `MemBump::new` (available under feature `alloc`)
+  that left the counter of occupied bytes uninitialized.
+
+# v0.2.5
+
+- Bump `atomic-polyfill` to `1`, as discovered during Debian packaging.
+
+# v0.2.4
+
+- The Safety Requirements for `Allocation::leak` have been refined. It's now
+  noted explicitly that that caller is responsible for ensuring that the public
+  pointer field has not active dependent pointers.
+- Added `Allocation::boxed` to wrap a value into a destructing owner.
+- Added `LeakBox::from_mut_unchecked` which doesn't risk an inappropriate
+  lifetime compared to a pointer cast.
+- Added `unsync::Bump::{from_mem,from_mut_unchecked}` to construct the unsized
+  type without an allocation.
+- Added `unsync::Bump::into_mem` to retrieve the memory owned by the allocator.
+- Added `unsync::Bump::capacity`.
+- Added `unsync::Bump::data_ptr` as an unsafe escape hatch to the memory
+  region.
+- Added `unsync::Bump::get_unchecked` which wraps `data_ptr` into a very
+  slightly safer API to access previously leaked allocations.
+
+# v0.2.3
+
+- Added support for `thumbv6m` targets through use of `atomic-polyfill`
+- Added `LeakBox::into_pin`, equivalent of `Box::into_pin`
+- Added dedicated guide-like documentation, explaining an example in more
+  detail. These are available when building `cargo doc` or more generally with
+  the doc configuration.
+- Fixed use of deprecated `compare_and_swap`.
+
 # v0.2.2
 
 - Added a synchronous Bump allocator. Its interface is similar to the

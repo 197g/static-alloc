@@ -1,4 +1,4 @@
-use alloc_traits::{Coercion, CoerceUnsize};
+use unsize::{Coercion, CoerceUnsize};
 use without_alloc::{boxed::Box, Uninit};
 use core::mem::MaybeUninit;
 

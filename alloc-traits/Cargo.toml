@@ -2,21 +2,17 @@
 name = "alloc-traits"
 version = "0.1.1"
 description = "Traits to replace or supplement the alloc module in no_std"
-authors = ["Andreas Molzer <andreas.molzer@gmx.de>"]
+authors = ["Aurelia Molzer <5550310+197g@users.noreply.github.com>"]
 edition = "2018"
-license = "MIT"
+license = "MIT OR Apache-2.0 OR Zlib"
 documentation = "https://docs.rs/static-alloc"
 repository = "https://github.com/HeroicKatora/static-alloc"
 categories = ["embedded", "memory-management", "no-std"]
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [lib]
 name = "alloc_traits"
 
 [dependencies]
-
-[build-dependencies]
-autocfg = "1"
 
 [package.metadata.docs.rs]
 all-features = true

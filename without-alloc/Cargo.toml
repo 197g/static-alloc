@@ -1,8 +1,8 @@
 [package]
 name = "without-alloc"
-version = "0.2.1"
+version = "0.2.2"
 description = "Replacements for `Box`, `Rc`, `Vec`, .. without `alloc`"
-authors = ["Andreas Molzer <andreas.molzer@gmx.de>"]
+authors = ["Aurelia Molzer <5550310+197g@users.noreply.github.com>"]
 edition = "2018"
 license = "MIT"
 documentation = "https://docs.rs/without-alloc"
@@ -21,6 +21,7 @@ nightly_set_ptr_value = []
 
 [dependencies]
 alloc-traits = { path = "../alloc-traits", version = "0.1.0" }
+unsize = "1.1.0"
 
 [dev-dependencies]
 static-alloc = { path = "../static-alloc" }

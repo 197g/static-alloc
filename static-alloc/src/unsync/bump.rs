@@ -1,5 +1,5 @@
 use core::{
-    alloc::{Layout, LayoutErr},
+    alloc::{Layout, LayoutError},
     cell::{Cell, UnsafeCell},
     mem::{self, MaybeUninit},
     ops,
@@ -71,6 +71,12 @@ pub struct Bump<T> {
     // Warning: when changing the data layout, you must change `MemBump` as well.
 }
 
+/// An error used when one could not re-use raw memory for a bump allocator.
+#[derive(Debug)]
+pub struct FromMemError {
+    _inner: (),
+}
+
 /// A dynamically sized allocation block in which any type can be allocated.
 #[repr(C)]
 pub struct MemBump {
@@ -90,7 +96,7 @@ pub struct MemBump {
     /// Note that the underlying memory is in one
     /// contiguous `UnsafeCell`, it's only represented
     /// here to make it easier to slice.
-    data: [UnsafeCell<MaybeUninit<u8>>],
+    data: UnsafeCell<[MaybeUninit<u8>]>,
 }
 
 impl<T> Bump<T> {
@@ -119,15 +125,104 @@ impl<T> Bump<T> {
 impl MemBump {
     /// Allocate some space to use for a bump allocator.
     pub fn new(capacity: usize) -> alloc::boxed::Box<Self> {
-        let layout = Self::layout_from_size(capacity)
-            .expect("Bad layout");
-        let ptr = NonNull::new(unsafe {
-                alloc::alloc::alloc(layout)
-            }).unwrap_or_else(|| {
-                alloc::alloc::handle_alloc_error(layout)
-            });
+        let layout = Self::layout_from_size(capacity).expect("Bad layout");
+        let ptr = NonNull::new(unsafe { alloc::alloc::alloc(layout) })
+            .unwrap_or_else(|| alloc::alloc::handle_alloc_error(layout));
         let ptr = ptr::slice_from_raw_parts_mut(ptr.as_ptr(), capacity);
+        unsafe { ptr::write(ptr as *mut Cell<usize>, Cell::new(0)) };
         unsafe { alloc::boxed::Box::from_raw(ptr as *mut MemBump) }
+    }
+}
+
+impl MemBump {
+    /// Initialize a bump allocator from existing memory.
+    ///
+    /// # Usage
+    ///
+    /// ```
+    /// use core::mem::MaybeUninit;
+    /// use static_alloc::unsync::MemBump;
+    ///
+    /// let mut backing = [MaybeUninit::new(0); 128];
+    /// let alloc = MemBump::from_mem(&mut backing)?;
+    ///
+    /// # Ok::<(), static_alloc::unsync::FromMemError>(())
+    /// ```
+    pub fn from_mem(mem: &mut [MaybeUninit<u8>]) -> Result<LeakBox<'_, Self>, FromMemError> {
+        let header = Self::header_layout();
+        let offset = mem.as_ptr().align_offset(header.align());
+        // Align the memory for the header.
+        let mem = mem.get_mut(offset..).ok_or(FromMemError { _inner: () })?;
+        mem.get_mut(..header.size())
+            .ok_or(FromMemError { _inner: () })?
+            .fill(MaybeUninit::new(0));
+        Ok(unsafe { Self::from_mem_unchecked(mem) })
+    }
+
+    /// Construct a bump allocator from existing memory without reinitializing.
+    ///
+    /// This allows the caller to (unsafely) fallback to manual borrow checking of the memory
+    /// region between regions of allocator use.
+    ///
+    /// # Safety
+    ///
+    /// The memory must contain data that has been previously wrapped as a `MemBump`, exactly. The
+    /// only endorsed sound form of obtaining such memory is [`MemBump::into_mem`].
+    ///
+    /// Warning: Any _use_ of the memory will have invalidated all pointers to allocated objects,
+    /// more specifically the provenance of these pointers is no longer valid! You _must_ derive
+    /// new pointers based on their offsets.
+    pub unsafe fn from_mem_unchecked(mem: &mut [MaybeUninit<u8>]) -> LeakBox<'_, Self> {
+        let raw = Self::from_aligned_mem(mem);
+        LeakBox::from_mut_unchecked(raw)
+    }
+
+    /// Cast pre-initialized, aligned memory into a bump allocator.
+    #[allow(unused_unsafe)]
+    unsafe fn from_aligned_mem(mem: &mut [MaybeUninit<u8>]) -> &mut Self {
+        let header = Self::header_layout();
+        // debug_assert!(mem.len() >= header.size());
+        // debug_assert!(mem.as_ptr().align_offset(header.align()) == 0);
+
+        let datasize = mem.len() - header.size();
+        // Round down to the header alignment! The whole struct will occupy memory according to its
+        // natural alignment. We must be prepared fro the `pad_to_align` so to speak.
+        let datasize = datasize - datasize % header.align();
+        debug_assert!(Self::layout_from_size(datasize).map_or(false, |l| l.size() <= mem.len()));
+
+        let raw = mem.as_mut_ptr() as *mut u8;
+        // Turn it into a fat pointer with correct metadata for a `MemBump`.
+        // Safety:
+        // - The data is writable as we owned
+        unsafe { &mut *(ptr::slice_from_raw_parts_mut(raw, datasize) as *mut MemBump) }
+    }
+
+    /// Unwrap the memory owned by an unsized bump allocator.
+    ///
+    /// This releases the memory used by the allocator, similar to `Box::leak`, with the difference
+    /// of operating on unique references instead. It is necessary to own the bump allocator due to
+    /// internal state contained within the memory region that the caller can subsequently
+    /// invalidate.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use core::mem::MaybeUninit;
+    /// use static_alloc::unsync::MemBump;
+    ///
+    /// # let mut backing = [MaybeUninit::new(0); 128];
+    /// # let alloc = MemBump::from_mem(&mut backing)?;
+    /// let memory: &mut [_] = MemBump::into_mem(alloc);
+    /// assert!(memory.len() <= 128, "Not guaranteed to use all memory");
+    ///
+    /// // Safety: We have not touched the memory itself.
+    /// unsafe { MemBump::from_mem_unchecked(memory) };
+    /// # Ok::<(), static_alloc::unsync::FromMemError>(())
+    /// ```
+    pub fn into_mem<'lt>(this: LeakBox<'lt, Self>) -> &'lt mut [MaybeUninit<u8>] {
+        let layout = Layout::for_value(&*this);
+        let mem_pointer = LeakBox::into_raw(this) as *mut MaybeUninit<u8>;
+        unsafe { &mut *ptr::slice_from_raw_parts_mut(mem_pointer, layout.size()) }
     }
 
     /// Returns the layout for the `header` of a `MemBump`.
@@ -140,29 +235,36 @@ impl MemBump {
     }
 
     /// Returns the layout for an array with the size of `size`
-    fn data_layout(size: usize) -> Result<Layout, LayoutErr> {
+    fn data_layout(size: usize) -> Result<Layout, LayoutError> {
         Layout::array::<UnsafeCell<MaybeUninit<u8>>>(size)
     }
 
     /// Returns a layout for a MemBump where the length of the data field is `size`.
     /// This relies on the two functions defined above.
-    pub(crate) fn layout_from_size(size: usize) -> Result<Layout, LayoutErr> {
+    pub(crate) fn layout_from_size(size: usize) -> Result<Layout, LayoutError> {
         let data_tail = Self::data_layout(size)?;
         let (layout, _) = Self::header_layout().extend(data_tail)?;
         Ok(layout.pad_to_align())
     }
-}
 
-impl MemBump {
     /// Returns capacity of this `MemBump`.
     /// This is how many *bytes* can be allocated
     /// within this node.
-    pub(crate) const fn capacity(&self) -> usize {
-        self.data.len()
+    pub const fn capacity(&self) -> usize {
+        self.data.get().len()
     }
-}
 
-impl MemBump {
+    /// Get a raw pointer to the data.
+    ///
+    /// Note that *any* use of the pointer must be done with extreme care as it may invalidate
+    /// existing references into the allocated region. Furthermore, bytes may not be initialized.
+    /// The length of the valid region is [`MemBump::capacity`].
+    ///
+    /// Prefer [`MemBump::get_unchecked`] for reconstructing a prior allocation.
+    pub fn data_ptr(&self) -> NonNull<u8> {
+        NonNull::new(self.data.get() as *mut u8).expect("from a reference")
+    }
+
     /// Allocate a region of memory.
     ///
     /// This is a safe alternative to [GlobalAlloc::alloc](#impl-GlobalAlloc).
@@ -171,6 +273,8 @@ impl MemBump {
     /// This function will panic if the requested layout has a size of `0`. For the use in a
     /// `GlobalAlloc` this is explicitely forbidden to request and would allow any behaviour but we
     /// instead strictly check it.
+    ///
+    /// FIXME(breaking): this could well be a `Result<_, Failure>`.
     pub fn alloc(&self, layout: Layout) -> Option<NonNull<u8>> {
         Some(self.try_alloc(layout)?.ptr)
     }
@@ -183,9 +287,7 @@ impl MemBump {
     ///
     /// # Panics
     /// This function may panic if the provided `level` is from a different slab.
-    pub fn alloc_at(&self, layout: Layout, level: Level)
-        -> Result<NonNull<u8>, Failure>
-    {
+    pub fn alloc_at(&self, layout: Layout, level: Level) -> Result<NonNull<u8>, Failure> {
         let Allocation { ptr, .. } = self.try_alloc_at(layout, level.0)?;
         Ok(ptr)
     }
@@ -211,6 +313,8 @@ impl MemBump {
     ///
     /// assert_eq!(**cell_ref, 0xff);
     /// ```
+    ///
+    /// FIXME(breaking): this could well be a `Result<_, Failure>`.
     pub fn get<V>(&self) -> Option<Allocation<V>> {
         let alloc = self.try_alloc(Layout::new::<V>())?;
         Some(Allocation {
@@ -222,7 +326,8 @@ impl MemBump {
 
     /// Get an allocation for a specific type at a specific level.
     ///
-    /// See [`get`] for usage.
+    /// See [`get`] for usage. This can be used to ensure that data is contiguous in concurrent
+    /// access to the allocator.
     ///
     /// [`get`]: #method.get
     pub fn get_at<V>(&self, level: Level) -> Result<Allocation<V>, Failure> {
@@ -232,6 +337,81 @@ impl MemBump {
             level: alloc.level,
             ptr: alloc.ptr.cast(),
         })
+    }
+
+    /// Reacquire an allocation that has been performed previously.
+    ///
+    /// This call won't invalidate any other allocations.
+    ///
+    /// # Safety
+    ///
+    /// The caller must guarantee that no other pointers to this prior allocation are alive, or can
+    /// be created. This is guaranteed if the allocation was performed previously, has since been
+    /// discarded, and `reset` can not be called (for example, the caller holds a shared
+    /// reference).
+    ///
+    /// # Usage
+    ///
+    /// ```
+    /// # use core::mem::MaybeUninit;
+    /// # use static_alloc::unsync::MemBump;
+    /// # let mut backing = [MaybeUninit::new(0); 128];
+    /// # let alloc = MemBump::from_mem(&mut backing).unwrap();
+    /// // Create an initial allocation.
+    /// let level = alloc.level();
+    /// let allocation = alloc.get_at::<usize>(level)?;
+    /// let address = allocation.ptr.as_ptr() as usize;
+    /// // pretend to lose the owning pointer of the allocation.
+    /// let _ = { allocation };
+    ///
+    /// // Restore our access.
+    /// let renewed = unsafe { alloc.get_unchecked::<usize>(level) };
+    /// assert_eq!(address, renewed.ptr.as_ptr() as usize);
+    /// # Ok::<_, static_alloc::bump::Failure>(())
+    /// ```
+    ///
+    /// Crucially, you can rely on *other* allocations to stay valid. The caller is responsible of
+    /// using the returning pointer to only refer to allocations that are not referenced through
+    /// any other way.
+    ///
+    /// ```
+    /// # use core::mem::MaybeUninit;
+    /// # use static_alloc::{leaked::LeakBox, unsync::MemBump};
+    /// # let mut backing = [MaybeUninit::new(0); 128];
+    /// # let alloc = MemBump::from_mem(&mut backing).unwrap();
+    /// let level = alloc.level();
+    /// alloc.get_at::<usize>(level)?;
+    ///
+    /// let other_val = alloc.bump_box()?;
+    /// let other_val = LeakBox::write(other_val, 0usize);
+    ///
+    /// let renew = unsafe { alloc.get_unchecked::<usize>(level) };
+    /// assert_eq!(*other_val, 0); // Not UB!
+    /// # Ok::<_, static_alloc::bump::Failure>(())
+    /// ```
+    pub unsafe fn get_unchecked<V>(&self, level: Level) -> Allocation<'_, V> {
+        debug_assert!(level.0 < self.capacity());
+
+        debug_assert!(
+            level <= self.level(),
+            "Tried to access an allocation that does not yet exist"
+        );
+
+        let ptr = self.data_ptr().as_ptr();
+        // Safety: guaranteed by the caller.
+        let alloc = ptr.add(level.0);
+        let ptr = NonNull::new_unchecked(alloc).cast::<V>();
+
+        debug_assert!(
+            ptr.as_ptr().is_aligned(),
+            "Tried to access an allocation with improper type"
+        );
+
+        Allocation {
+            level,
+            lifetime: AllocTime::default(),
+            ptr,
+        }
     }
 
     /// Allocate space for one `T` without initializing it.
@@ -257,9 +437,15 @@ impl MemBump {
     ///
     /// assert!(data.try_borrow_mut().is_ok());
     /// ```
-    pub fn bump_box<'bump, T: 'bump>(&'bump self)
-        -> Result<LeakBox<'bump, MaybeUninit<T>>, Failure>
-    {
+    ///
+    /// FIXME(breaking): should return evidence of the level (observed, and post). Something
+    /// similar to `Allocation` but containing a `LeakBox<T>` instead? Introduce that to the sync
+    /// `Bump` allocator as well.
+    ///
+    /// FIXME(breaking): align with sync `Bump::get` (probably rename get to bump_box).
+    pub fn bump_box<'bump, T: 'bump>(
+        &'bump self,
+    ) -> Result<LeakBox<'bump, MaybeUninit<T>>, Failure> {
         let allocation = self.get_at(self.level())?;
         Ok(unsafe { allocation.uninit() }.into())
     }
@@ -277,9 +463,10 @@ impl MemBump {
     /// use a properly sized buffer instead and implement an iterative solution. (Left as an
     /// exercise to the reader, or see the examples for `without-alloc` where we use such a dynamic
     /// allocation with an inline vector as our stack).
-    pub fn bump_array<'bump, T: 'bump>(&'bump self, n: usize)
-        -> Result<LeakBox<'bump, [MaybeUninit<T>]>, Failure>
-    {
+    pub fn bump_array<'bump, T: 'bump>(
+        &'bump self,
+        n: usize,
+    ) -> Result<LeakBox<'bump, [MaybeUninit<T>]>, Failure> {
         let layout = Layout::array::<T>(n).map_err(|_| Failure::Exhausted)?;
         let raw = self.alloc(layout).ok_or(Failure::Exhausted)?;
         let slice = ptr::slice_from_raw_parts_mut(raw.cast().as_ptr(), n);
@@ -300,24 +487,24 @@ impl MemBump {
         self.index.set(0)
     }
 
-    fn try_alloc(&self, layout: Layout)
-        -> Option<Allocation<'_>>
-    {
+    fn try_alloc(&self, layout: Layout) -> Option<Allocation<'_>> {
         let consumed = self.index.get();
         match self.try_alloc_at(layout, consumed) {
             Ok(alloc) => return Some(alloc),
             Err(Failure::Exhausted) => return None,
-            Err(Failure::Mismatch{ observed: _ }) => {
+            Err(Failure::Mismatch { observed: _ }) => {
                 unreachable!("Count in Cell concurrently modified, this UB")
             }
         }
     }
 
-    fn try_alloc_at(&self, layout: Layout, expect_consumed: usize)
-        -> Result<Allocation<'_>, Failure>
-    {
+    fn try_alloc_at(
+        &self,
+        layout: Layout,
+        expect_consumed: usize,
+    ) -> Result<Allocation<'_>, Failure> {
         assert!(layout.size() > 0);
-        let length = self.data.len();
+        let length = mem::size_of_val(&self.data);
         // We want to access contiguous slice, so cast to a single cell.
         let data: &UnsafeCell<[MaybeUninit<u8>]> =
             unsafe { &*(&self.data as *const _ as *const UnsafeCell<_>) };
@@ -327,7 +514,7 @@ impl MemBump {
         let requested = layout.size();
 
         // Ensure no overflows when calculating offets within.
-        assert!(expect_consumed <= length);
+        assert!(expect_consumed <= length, "{}/{}", expect_consumed, length);
 
         let available = length.checked_sub(expect_consumed).unwrap();
         let ptr_to = base_ptr.wrapping_add(expect_consumed);
@@ -354,8 +541,10 @@ impl MemBump {
             Ok(()) => (),
             Err(observed) => {
                 // Someone else was faster, if you want it then recalculate again.
-                return Err(Failure::Mismatch { observed: Level(observed) });
-            },
+                return Err(Failure::Mismatch {
+                    observed: Level(observed),
+                });
+            }
         }
 
         let aligned = unsafe {
@@ -382,11 +571,6 @@ impl MemBump {
             Ok(())
         }
     }
-
-    /// 'Allocate' a ZST.
-    fn zst_fake_alloc<Z>(&self) -> Allocation<'_, Z> {
-        Allocation::for_zst(self.level())
-    }
 }
 
 impl<T> ops::Deref for Bump<T> {
@@ -397,8 +581,7 @@ impl<T> ops::Deref for Bump<T> {
         // Construct a point with the meta data of a slice to `data`, but pointing to the whole
         // struct instead. This meta data is later copied to the meta data of `bump` when cast.
         let ptr = self as *const Self as *const MaybeUninit<u8>;
-        let mem: *const [MaybeUninit<u8>] =
-            ptr::slice_from_raw_parts(ptr, data_layout.size());
+        let mem: *const [MaybeUninit<u8>] = ptr::slice_from_raw_parts(ptr, data_layout.size());
         // Now we have a pointer to MemBump with length meta data of the data slice.
         let bump = unsafe { &*(mem as *const MemBump) };
         debug_assert_eq!(from_layout, Layout::for_value(bump));
@@ -413,8 +596,7 @@ impl<T> ops::DerefMut for Bump<T> {
         // Construct a point with the meta data of a slice to `data`, but pointing to the whole
         // struct instead. This meta data is later copied to the meta data of `bump` when cast.
         let ptr = self as *mut Self as *mut MaybeUninit<u8>;
-        let mem: *mut [MaybeUninit<u8>] =
-            ptr::slice_from_raw_parts_mut(ptr, data_layout.size());
+        let mem: *mut [MaybeUninit<u8>] = ptr::slice_from_raw_parts_mut(ptr, data_layout.size());
         // Now we have a pointer to MemBump with length meta data of the data slice.
         let bump = unsafe { &mut *(mem as *mut MemBump) };
         debug_assert_eq!(from_layout, Layout::for_value(bump));

@@ -1,0 +1,23 @@
+[package]
+name = "unsize"
+version = "1.1.0"
+description = "A stable alternative to CoerceUnsized"
+authors = ["Aurelia Molzer <5550310+197g@users.noreply.github.com>"]
+edition = "2018"
+license = "MIT OR Apache-2.0 OR Zlib"
+documentation = "https://docs.rs/unsize"
+repository = "https://github.com/HeroicKatora/static-alloc"
+readme = "Readme.md"
+categories = ["embedded", "no-std"]
+
+[dependencies]
+
+[features]
+# Implement CoerecePtr for `alloc` pointer types
+alloc = []
+
+[build-dependencies]
+autocfg = "1"
+
+[package.metadata.docs.rs]
+all-features = true

@@ -2,7 +2,7 @@
 name = "exit-stack"
 version = "0.1.0"
 description = "Dynamically pin values to the stack, with no macros."
-authors = ["Andreas Molzer <andreas.molzer@gmx.de>"]
+authors = ["Aurelia Molzer <5550310+197g@users.noreply.github.com>"]
 edition = "2018"
 license = "MIT"
 documentation = "https://docs.rs/exit-stack"

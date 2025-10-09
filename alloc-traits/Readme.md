@@ -1,5 +1,10 @@
 # alloc-traits
 
+[![Crates.io Status](https://img.shields.io/crates/v/alloc-traits.svg)](https://crates.io/crates/alloc-traits)
+[![Docs.rs Status](https://docs.rs/alloc-traits/badge.svg)](https://docs.rs/alloc-traits/)
+[![License](https://img.shields.io/badge/license-Zlib-blue.svg)](https://raw.githubusercontent.com/HeroicKatora/static-alloc/master/LICENSE.ZLIB)
+[![CI Status](https://api.cirrus-ci.com/github/HeroicKatora/static-alloc.svg)](https://cirrus-ci.com/github/HeroicKatora/static-alloc)
+
 Defines `no_std` and bare metal usable traits that can be implemented to
 defined different kinds of allocators, similar to `alloc::GlobalAlloc`. But
 unlike the standard library trait they do not presume global uniqueness and

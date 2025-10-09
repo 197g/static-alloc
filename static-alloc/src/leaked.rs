@@ -1,4 +1,8 @@
 //! This module contains an owning wrapper of a leaked struct.
+//!
+//! FIXME(breaking): Naming. `leaking` implies the `Drop` of the value as well but we do the
+//! precise opposite.
+use core::pin::Pin;
 use alloc_traits::AllocTime;
 
 use core::{
@@ -109,6 +113,9 @@ impl<T> Alloca<T> {
 ///
 /// This is an owning pointer comparable to `Box`. It drops the contained value when it is dropped
 /// itself. The difference is that no deallocation logic is ever executed.
+///
+/// FIXME(non-breaking): the name is rather confusing. Maybe it should be `BumpBox` or `RefBox`?
+/// Not `StackBox` because the value's location in memory is not the defining feature.
 ///
 /// # Usage
 ///
@@ -236,6 +243,42 @@ impl<'ctx, T: ?Sized> LeakBox<'ctx, T> {
         }
     }
 
+    /// Wrap a mutable reference to a complex value as if it were owned.
+    ///
+    /// # Safety
+    ///
+    /// The value must be owned by the caller. That is, the mutable reference must not be used
+    /// after the `LeakBox` is dropped. In particular the value must not be dropped by the caller.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use core::mem::ManuallyDrop;
+    /// use static_alloc::leaked::LeakBox;
+    ///
+    /// fn with_stack_drop<T>(val: T) {
+    ///     let mut val = ManuallyDrop::new(val);
+    ///     // Safety:
+    ///     // - Shadows the variable, rendering the prior inaccessible.
+    ///     // - Dropping is now the responsibility of `LeakBox`.
+    ///     let val = unsafe { LeakBox::from_mut_unchecked(&mut *val) };
+    /// }
+    ///
+    /// // Demonstrate that it is correctly dropped.
+    /// let variable = core::cell::RefCell::new(0);
+    /// with_stack_drop(variable.borrow_mut());
+    /// assert!(variable.try_borrow_mut().is_ok());
+    /// ```
+    #[allow(unused_unsafe)]
+    pub unsafe fn from_mut_unchecked(val: &'ctx mut T) -> Self {
+        // SAFETY:
+        // * Is valid instance
+        // * Not aliased as by mut reference
+        // * Dropping soundness is guaranteed by the caller.
+        // * We don't invalidate any value, nor can the caller.
+        unsafe { LeakBox::from_raw(val) }
+    }
+
     /// Leak the instances as a mutable reference.
     ///
     /// After calling this method the value is no longer managed by `LeakBox`. Its Drop impl will
@@ -277,6 +320,76 @@ impl<'ctx, T: ?Sized> LeakBox<'ctx, T> {
         // * The LeakBox type guarantees this is initialized and not mutably aliased.
         // * For the lifetime 'a which is at most 'ctx.
         unsafe { &mut *pointer }
+    }
+}
+
+impl<T: 'static> LeakBox<'static, T> {
+    /// Pin an instance that's leaked for the remaining program runtime.
+    ///
+    /// After calling this method the value can only safely be referenced mutably if it is `Unpin`,
+    /// otherwise it is only accessible behind a `Pin`. Note that this does _not_ imply that the
+    /// `Drop` glue, or explicit `Drop`-impl, is guaranteed to run.
+    ///
+    /// # Usage
+    ///
+    /// A decent portion of futures must be _pinned_ before the can be awaited inside another
+    /// future. In particular this is required for self-referential futures that store pointers
+    /// into their own object's memory. This is the case for the future type of an `asnyc fn` if
+    /// there are potentially any stack references when it is suspended/waiting on another future.
+    /// Consider this example:
+    ///
+    /// ```compile_fail
+    /// use static_alloc::{Bump, leaked::LeakBox}; 
+    ///
+    /// async fn example(x: usize) -> usize {
+    ///     // Holding reference across yield point.
+    ///     // This requires pinning to run this future.
+    ///     let y = &x;
+    ///     core::future::ready(()).await;
+    ///     *y
+    /// }
+    ///
+    /// static POOL: Bump<[usize; 128]> = Bump::uninit();
+    /// let mut future = POOL.leak_box(example(0))
+    ///     .expect("Enough space for small async fn");
+    ///
+    /// let usage = async move {
+    /// // error[E0277]: `GenFuture<[static generator@src/leaked.rs …]>` cannot be unpinned
+    ///     let _ = (&mut *future).await;
+    /// };
+    /// ```
+    ///
+    /// This method can be used to pin instances allocated from a global pool without requiring the
+    /// use of a macro or unsafe on the caller's part. Now, with the correct usage of `into_pin`:
+    ///
+    /// ```
+    /// use static_alloc::{Bump, leaked::LeakBox}; 
+    ///
+    /// async fn example(x: usize) -> usize {
+    ///     // Holding reference across yield point.
+    ///     // This requires pinning to run this future.
+    ///     let y = &x;
+    ///     core::future::ready(()).await;
+    ///     *y
+    /// }
+    ///
+    /// static POOL: Bump<[usize; 128]> = Bump::uninit();
+    /// let future = POOL.leak_box(example(0))
+    ///     .expect("Enough space for small async fn");
+    ///
+    /// // PIN this future!
+    /// let mut future = LeakBox::into_pin(future);
+    ///
+    /// let usage = async move {
+    ///     let _ = future.as_mut().await;
+    /// };
+    /// ```
+    pub fn into_pin(this: Self) -> Pin<Self> {
+        // SAFETY:
+        // * This memory is valid for `'static` duration, independent of the fate of `this` and
+        //   even when it is forgotten. This trivially implies that any Drop is called before the
+        //   memory is invalidated, as required by `Pin`.
+        unsafe { Pin::new_unchecked(this) }
     }
 }
 

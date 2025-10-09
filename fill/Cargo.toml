@@ -2,9 +2,9 @@
 name = "fill"
 version = "0.1.1"
 description = "Provides the Fill trait, an alternative to Extend for finite containers"
-authors = ["Andreas Molzer <andreas.molzer@gmx.de>"]
+authors = ["Aurelia Molzer <5550310+197g@users.noreply.github.com>"]
 edition = "2018"
-license = "MIT"
+license = "MIT OR Apache-2.0 OR Zlib"
 documentation = "https://docs.rs/fill"
 repository = "https://github.com/HeroicKatora/static-alloc"
 readme = "Readme.md"

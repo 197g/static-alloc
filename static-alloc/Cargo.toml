@@ -1,17 +1,21 @@
 [package]
 name = "static-alloc"
-version = "0.2.2"
+version = "0.2.6"
 description = "A bump allocator on static memory for the alloc-traits crate"
-authors = ["Andreas Molzer <andreas.molzer@gmx.de>"]
+authors = ["Aurelia Molzer <5550310+197g@users.noreply.github.com>"]
 edition = "2018"
-license = "MIT"
+license = "MIT OR Apache-2.0 OR Zlib"
 documentation = "https://docs.rs/static-alloc"
-repository = "https://github.com/HeroicKatora/static-alloc"
+repository = "https://github.com/197g/static-alloc"
 readme = "Readme.md"
 categories = ["embedded", "memory-management", "no-std"]
 
+[package.metadata.docs.rs]
+all-features = true
+
 [dependencies]
 alloc-traits = { path = "../alloc-traits", version = "0.1.0" }
+atomic-polyfill = { version = "1", optional = true }
 
 [features]
 alloc = []
@@ -21,6 +25,9 @@ nightly_try_reserve = []
 # Enables the `unsync::Chain` module. Note that this is explicitly outside the
 # SemVer stability guarantees!
 nightly_chain = ["alloc"]
+# Enables the use of the `atomic-polyfill` crate to support targets without
+# native atomic CAS operations
+polyfill = ["atomic-polyfill"]
 
 # Tests that test `Bump` as GlobalAlloc. Must be in a separate test each.
 [[test]]
@@ -41,7 +48,8 @@ required-features = ["DISABLED"]
 [[test]]
 name = "unsync"
 path = "tests/unsync.rs"
-required-features = ["alloc"]
 
-[package.metadata.docs.rs]
-all-features = true
+[[test]]
+name = "chain"
+path = "tests/chain.rs"
+required-features = ["nightly_chain"]

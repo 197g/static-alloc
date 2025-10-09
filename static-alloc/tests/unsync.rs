@@ -1,23 +1,16 @@
+use core::mem::MaybeUninit;
 use static_alloc::leaked::LeakBox;
-use static_alloc::unsync::{Chain, MemBump};
+use static_alloc::unsync::MemBump;
 
 #[test]
-fn unsync_bump() {
-    let chain = Chain::new(20).unwrap();
+fn raw_from_mem() {
+    let mut memory = [MaybeUninit::new(0); 128];
+    let bump = MemBump::from_mem(&mut memory)
+        .expect("Enough memory for its metadata");
 
-    let n1 = chain.bump_box::<u64>().unwrap();
-    assert_eq!(chain.remaining_capacity(), 12);
-
-    let n2 = chain.bump_box::<u64>().unwrap();
-    assert_eq!(chain.remaining_capacity(), 4);
-
-    let n3 = chain.bump_box::<u32>().unwrap();
-    assert_eq!(chain.remaining_capacity(), 0);
-
-    assert!(chain.bump_box::<u32>().is_err());
-
-    chain.chain(Chain::new(40).unwrap());
-    assert!(chain.bump_box::<u32>().is_ok());
+    let n1 = bump.bump_box::<u64>().unwrap();
+    let n2 = bump.bump_box::<u64>().unwrap();
+    let n3 = bump.bump_box::<u64>().unwrap();
 
     let mut n1 = LeakBox::write(n1, 10);
     let mut n2 = LeakBox::write(n2, 20);
@@ -33,7 +26,8 @@ fn unsync_bump() {
 }
 
 #[test]
-fn bump() {
+#[cfg(feature = "alloc")]
+fn allocate_with_fixed_capacity() {
     const CAPACITY: usize = 16;
     let bump = MemBump::new(CAPACITY);
     for i in 0..CAPACITY {

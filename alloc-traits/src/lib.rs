@@ -15,17 +15,15 @@
 //! [`static-alloc`]: https://crates.io/crates/static-alloc
 //! [`without-alloc`]: https://crates.io/crates/without-alloc
 
-// Copyright 2019-2021 Andreas Molzer
+// Copyright 2019-2021 Aurelia Molzer
 #![no_std]
 #![deny(missing_docs)]
 
 mod layout;
 mod local;
-mod unsize;
 pub mod util;
 
 pub use crate::layout::{Layout, NonZeroLayout};
 pub use crate::local::{AllocTime, Allocation, LocalAlloc};
 #[allow(deprecated)]
 pub use crate::local::Invariant;
-pub use crate::unsize::{Coercion, CoerceUnsize, CoerciblePtr};

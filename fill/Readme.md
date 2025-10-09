@@ -2,7 +2,7 @@
 
 [![Crates.io Status](https://img.shields.io/crates/v/fill.svg)](https://crates.io/crates/fill)
 [![Docs.rs Status](https://docs.rs/fill/badge.svg)](https://docs.rs/fill/)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](https://raw.githubusercontent.com/HeroicKatora/static-alloc/master/LICENSE)
+[![License](https://img.shields.io/badge/license-Zlib-blue.svg)](https://raw.githubusercontent.com/HeroicKatora/static-alloc/master/LICENSE.ZLIB)
 [![CI Status](https://api.cirrus-ci.com/github/HeroicKatora/static-alloc.svg)](https://cirrus-ci.com/github/HeroicKatora/static-alloc)
 
 Provides the Fill trait, an alternative to Extend for finite containers.
