@@ -3,6 +3,7 @@ members = [
 	"alloc-traits",
 	"exit-stack",
 	"fill",
+	"same-alloc",
 	"static-alloc",
 	"unsize",
 	"without-alloc",
