@@ -1,4 +1,4 @@
-use same_alloc::{same, BufferVec};
+use same_alloc::{same, VecBuffer};
 
 /// Given a list of space separated names, give the 'middle' one if they were sorted.
 fn select_median_name(unparsed: &str) -> &str {
@@ -11,7 +11,7 @@ fn select_median_name(unparsed: &str) -> &str {
 
 fn select_median_name_with_buffer<'names>(
     unparsed: &'names str,
-    buf: &mut BufferVec<*const str>,
+    buf: &mut VecBuffer<*const str>,
 ) -> &'names str {
     let mut names = buf.use_for(same::for_ref());
     names.extend(unparsed.split(' '));
@@ -23,7 +23,7 @@ fn select_median_name_with_buffer<'names>(
 fn works() {
     let names = "Adrian Carla Beren Eliza Dala";
 
-    let mut buffer = BufferVec::default();
+    let mut buffer = VecBuffer::default();
     assert_eq!(buffer.use_for(same::id()).capacity(), 0);
 
     assert_eq!(select_median_name(names), select_median_name_with_buffer(names, &mut buffer));

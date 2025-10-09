@@ -10,6 +10,8 @@
 //! # Example
 //!
 //! ```rust
+//! # use same_alloc::{same, VecBuffer};
+//!
 //! fn select_median_name(unparsed: &str) -> &str {
 //!     // Problem: This type depends on the lifetime parameter. Ergo, we can not normally store
 //!     // _one_vector in the surrounding function, and instead need to allocate here a new one.
@@ -20,7 +22,7 @@
 //!
 //! fn select_median_name_with_buffer<'names>(
 //!     unparsed: &'names str,
-//!     buf: &mut SameVec<*const str>,
+//!     buf: &mut VecBuffer<*const str>,
 //! ) -> &'names str {
 //!     let mut names = buf.use_for(same::for_ref());
 //!     names.extend(unparsed.split(' '));
