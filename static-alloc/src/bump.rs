@@ -13,7 +13,7 @@ use core::ptr::{null_mut, NonNull};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg(feature = "polyfill")]
-use atomic_polyfill::{AtomicUsize, Ordering};
+use portable_atomic::{AtomicUsize, Ordering};
 
 use crate::leaked::LeakBox;
 use alloc_traits::{AllocTime, LocalAlloc, NonZeroLayout};

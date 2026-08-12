@@ -15,7 +15,7 @@ all-features = true
 
 [dependencies]
 alloc-traits = { path = "../alloc-traits", version = "0.1.0" }
-atomic-polyfill = { version = "1", optional = true }
+portable-atomic = { version = "1", optional = true, default-features = false }
 
 [features]
 alloc = []
@@ -25,9 +25,9 @@ nightly_try_reserve = []
 # Enables the `unsync::Chain` module. Note that this is explicitly outside the
 # SemVer stability guarantees!
 nightly_chain = ["alloc"]
-# Enables the use of the `atomic-polyfill` crate to support targets without
+# Enables the use of the `portable-atomic` crate to support targets without
 # native atomic CAS operations
-polyfill = ["atomic-polyfill"]
+polyfill = ["portable-atomic"]
 
 # Tests that test `Bump` as GlobalAlloc. Must be in a separate test each.
 [[test]]
