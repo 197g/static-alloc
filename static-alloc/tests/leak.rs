@@ -13,10 +13,10 @@ fn homogeneous() {
     assert_eq!(*next, 255);
     assert_eq!(*new_zero, 0);
 
-    let last = slab.leak(u64::max_value()).unwrap();
+    let last = slab.leak(u64::MAX).unwrap();
     assert_eq!(*next, 255);
     assert_eq!(*new_zero, 0);
-    assert_eq!(*last, u64::max_value());
+    assert_eq!(*last, u64::MAX);
 
     assert!(slab.leak(0_u8).is_err());
 }
@@ -57,8 +57,10 @@ fn level() {
     assert_eq!(slab.level(), level);
 
     // Can not get the same level again.
-    assert_eq!(slab.leak_at(0u16, init).unwrap_err().kind(),
-        static_alloc::bump::Failure::Mismatch { observed: level });
+    assert_eq!(
+        slab.leak_at(0u16, init).unwrap_err().kind(),
+        static_alloc::bump::Failure::Mismatch { observed: level }
+    );
 
     let (othu16, next) = slab.leak_at(10u16, level).unwrap();
     assert_eq!(*othu16, 10);

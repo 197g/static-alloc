@@ -80,13 +80,7 @@ pub struct FromMemError {
 /// A dynamically sized allocation block in which any type can be allocated.
 #[repr(C)]
 pub struct MemBump {
-    /// An index into the data field. This index
-    /// will always be an index to an element
-    /// that has not been allocated into.
-    /// Again this is wrapped in a Cell,
-    /// to allow modification with just a
-    /// &self reference.
-    index: Cell<usize>,
+    header: Header,
 
     /// The data slice of a node. This slice
     /// may be of any arbitrary size. We use
@@ -97,6 +91,16 @@ pub struct MemBump {
     /// contiguous `UnsafeCell`, it's only represented
     /// here to make it easier to slice.
     data: UnsafeCell<[MaybeUninit<u8>]>,
+}
+
+struct Header {
+    /// An index into the data field. This index
+    /// will always be an index to an element
+    /// that has not been allocated into.
+    /// Again this is wrapped in a Cell,
+    /// to allow modification with just a
+    /// &self reference.
+    index: Cell<usize>,
 }
 
 impl<T> Bump<T> {
@@ -156,6 +160,7 @@ impl MemBump {
         mem.get_mut(..header.size())
             .ok_or(FromMemError { _inner: () })?
             .fill(MaybeUninit::new(0));
+        // Safety: we just verified the size, and pivoted to the correct alignment.
         Ok(unsafe { Self::from_mem_unchecked(mem) })
     }
 
@@ -173,13 +178,18 @@ impl MemBump {
     /// more specifically the provenance of these pointers is no longer valid! You _must_ derive
     /// new pointers based on their offsets.
     pub unsafe fn from_mem_unchecked(mem: &mut [MaybeUninit<u8>]) -> LeakBox<'_, Self> {
-        let raw = Self::from_aligned_mem(mem);
-        LeakBox::from_mut_unchecked(raw)
+        // Safety: memory already valid, according to the caller.
+        let raw = unsafe { Self::reinterpret_aligned_mem(mem) };
+        // Safety: we own this value in the sense that `Drop` is not called by the caller.
+        unsafe { LeakBox::from_mut_unchecked(raw) }
     }
 
     /// Cast pre-initialized, aligned memory into a bump allocator.
     #[allow(unused_unsafe)]
-    unsafe fn from_aligned_mem(mem: &mut [MaybeUninit<u8>]) -> &mut Self {
+    unsafe fn reinterpret_aligned_mem(mem: &mut [MaybeUninit<u8>]) -> &mut Self {
+        // Safety: supposedly guaranteed by the caller.
+        unsafe { core::hint::assert_unchecked(mem.as_ptr().cast::<Header>().is_aligned()) };
+
         let header = Self::header_layout();
         // debug_assert!(mem.len() >= header.size());
         // debug_assert!(mem.as_ptr().align_offset(header.align()) == 0);
@@ -315,7 +325,7 @@ impl MemBump {
     /// ```
     ///
     /// FIXME(breaking): this could well be a `Result<_, Failure>`.
-    pub fn get<V>(&self) -> Option<Allocation<V>> {
+    pub fn get<V>(&self) -> Option<Allocation<'_, V>> {
         let alloc = self.try_alloc(Layout::new::<V>())?;
         Some(Allocation {
             lifetime: alloc.lifetime,
@@ -330,7 +340,7 @@ impl MemBump {
     /// access to the allocator.
     ///
     /// [`get`]: #method.get
-    pub fn get_at<V>(&self, level: Level) -> Result<Allocation<V>, Failure> {
+    pub fn get_at<V>(&self, level: Level) -> Result<Allocation<'_, V>, Failure> {
         let alloc = self.try_alloc_at(Layout::new::<V>(), level.0)?;
         Ok(Allocation {
             lifetime: alloc.lifetime,
@@ -397,10 +407,11 @@ impl MemBump {
             "Tried to access an allocation that does not yet exist"
         );
 
-        let ptr = self.data_ptr().as_ptr();
-        // Safety: guaranteed by the caller.
-        let alloc = ptr.add(level.0);
-        let ptr = NonNull::new_unchecked(alloc).cast::<V>();
+        let base_ptr = self.data_ptr().as_ptr();
+        // SAFETY: `level.0` is in bounds as assert above, or by the caller by having provided an
+        // existing allocation—all allocations we hand out are in bounds.
+        let alloc = unsafe { base_ptr.add(level.0) };
+        let ptr = NonNull::new(alloc).unwrap().cast::<V>();
 
         debug_assert!(
             ptr.as_ptr().is_aligned(),
@@ -476,7 +487,7 @@ impl MemBump {
 
     /// Get the number of already allocated bytes.
     pub fn level(&self) -> Level {
-        Level(self.index.get())
+        Level(self.header.index.get())
     }
 
     /// Reset the bump allocator.
@@ -484,11 +495,11 @@ impl MemBump {
     /// This requires a unique reference to the allocator hence no allocation can be alive at this
     /// point. It will reset the internal count of used bytes to zero.
     pub fn reset(&mut self) {
-        self.index.set(0)
+        self.header.index.set(0)
     }
 
     fn try_alloc(&self, layout: Layout) -> Option<Allocation<'_>> {
-        let consumed = self.index.get();
+        let consumed = self.header.index.get();
         match self.try_alloc_at(layout, consumed) {
             Ok(alloc) => return Some(alloc),
             Err(Failure::Exhausted) => return None,
@@ -550,7 +561,7 @@ impl MemBump {
         let aligned = unsafe {
             // SAFETY:
             // * `0 <= at_aligned < length` in bounds as checked above.
-            (base_ptr as *mut u8).add(at_aligned)
+            base_ptr.byte_add(at_aligned)
         };
 
         Ok(Allocation {
@@ -563,11 +574,12 @@ impl MemBump {
     fn bump(&self, expect: usize, consume: usize) -> Result<(), usize> {
         debug_assert!(consume <= self.capacity());
         debug_assert!(expect <= consume);
-        let prev = self.index.get();
+
+        let prev = self.header.index.get();
         if prev != expect {
             Err(prev)
         } else {
-            self.index.set(consume);
+            self.header.index.set(consume);
             Ok(())
         }
     }

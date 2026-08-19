@@ -21,7 +21,7 @@ fn leak_box_drops() {
 
 #[test]
 fn leaking() {
-    struct PanicOnDrop(usize);
+    struct PanicOnDrop(#[expect(unused)] usize);
     impl Drop for PanicOnDrop {
         fn drop(&mut self) {
             panic!("Do not drop me.");
