@@ -7,7 +7,7 @@
 use core::alloc::{GlobalAlloc, Layout};
 use core::cell::UnsafeCell;
 use core::mem::{self, MaybeUninit};
-use core::ptr::{null_mut, NonNull};
+use core::ptr::{NonNull, null_mut};
 
 #[cfg(not(feature = "polyfill"))]
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -375,7 +375,7 @@ impl<T> Bump<T> {
     ///
     /// # Panics
     /// This function may panic if the provided `level` is from a different slab.
-    pub fn alloc_at(&self, layout: Layout, level: Level) -> Result<Allocation, Failure> {
+    pub fn alloc_at(&self, layout: Layout, level: Level) -> Result<Allocation<'_>, Failure> {
         let Allocation {
             ptr,
             lifetime,
@@ -433,7 +433,7 @@ impl<T> Bump<T> {
     ///
     /// assert_eq!(**cell_ref, 0xff);
     /// ```
-    pub fn get<V>(&self) -> Option<Allocation<V>> {
+    pub fn get<V>(&self) -> Option<Allocation<'_, V>> {
         if mem::size_of::<V>() == 0 {
             return Some(self.zst_fake_alloc());
         }
@@ -457,7 +457,7 @@ impl<T> Bump<T> {
     /// See [`get`] for usage.
     ///
     /// [`get`]: #method.get
-    pub fn get_at<V>(&self, level: Level) -> Result<Allocation<V>, Failure> {
+    pub fn get_at<V>(&self, level: Level) -> Result<Allocation<'_, V>, Failure> {
         if mem::size_of::<V>() == 0 {
             let fake = self.zst_fake_alloc();
             // Note: zst_fake_alloc is a noop on the level, we may as well check after.
@@ -585,8 +585,11 @@ impl<T> Bump<T> {
         );
 
         let base_ptr = self.storage.get() as *mut T as *mut u8;
-        let alloc = base_ptr.add(level.0);
-        let ptr = NonNull::new_unchecked(alloc).cast::<V>();
+
+        // SAFETY: `level.0` is in bounds as assert above, or by the caller by having provided an
+        // existing allocation—all allocations we hand out are in bounds.
+        let alloc = unsafe { base_ptr.add(level.0) };
+        let ptr = NonNull::new(alloc).unwrap().cast::<V>();
 
         debug_assert!(
             ptr.as_ptr().is_aligned(),
@@ -842,9 +845,10 @@ impl<'alloc, T> Allocation<'alloc, T> {
     ///
     /// [`Bump::leak`]: struct.Bump.html#method.leak
     pub unsafe fn leak(self, val: T) -> &'alloc mut T {
-        // The pointer is not borrowed and valid as guaranteed by the caller.
-        core::ptr::write(self.ptr.as_ptr(), val);
-        &mut *self.ptr.as_ptr()
+        // Safety: The pointer is valid for a write as per caller.
+        unsafe { core::ptr::write(self.ptr.as_ptr(), val) };
+        // Safety: The pointer is not borrowed and valid as guaranteed by the caller.
+        unsafe { &mut *self.ptr.as_ptr() }
     }
 
     /// Write a value into the allocation and own it.
@@ -861,9 +865,9 @@ impl<'alloc, T> Allocation<'alloc, T> {
     /// [`Bump::leak`]: struct.Bump.html#method.leak
     pub unsafe fn boxed(self, val: T) -> LeakBox<'alloc, T> {
         // The pointer is not aliased and valid as guaranteed by the caller.
-        core::ptr::write(self.ptr.as_ptr(), val);
+        unsafe { core::ptr::write(self.ptr.as_ptr(), val) };
         // Safety: the instance is valid, was just initialized.
-        LeakBox::from_raw(self.ptr.as_ptr())
+        unsafe { LeakBox::from_raw(self.ptr.as_ptr()) }
     }
 
     /// Convert this into a mutable reference to an uninitialized slot.
@@ -872,7 +876,7 @@ impl<'alloc, T> Allocation<'alloc, T> {
     ///
     /// Must have been allocated for a layout that fits the layout of T previously.
     pub unsafe fn uninit(self) -> &'alloc mut MaybeUninit<T> {
-        &mut *self.ptr.cast().as_ptr()
+        unsafe { &mut *self.ptr.cast().as_ptr() }
     }
 
     /// An 'allocation' for an arbitrary ZST, at some arbitrary level.
@@ -919,8 +923,8 @@ unsafe impl<T> GlobalAlloc for Bump<T> {
 
     unsafe fn realloc(&self, ptr: *mut u8, current: Layout, new_size: usize) -> *mut u8 {
         let current = NonZeroLayout::from_layout(current.into()).unwrap();
-        // As guaranteed, `new_size` is greater than 0.
-        let new_size = core::num::NonZeroUsize::new_unchecked(new_size);
+        // Safety: As required of the caller, `new_size` is greater than 0.
+        let new_size = unsafe { core::num::NonZeroUsize::new_unchecked(new_size) };
 
         let target = match layout_reallocated(current, new_size) {
             Some(target) => target,
@@ -928,13 +932,15 @@ unsafe impl<T> GlobalAlloc for Bump<T> {
         };
 
         // Construct an allocation. This is not safe in general but the lifetime is not important.
-        let fake = alloc_traits::Allocation {
-            ptr: NonNull::new_unchecked(ptr),
+        let reconstructed = alloc_traits::Allocation {
+            // Safety: `ptr` is currently allocated via this allocator, i.e. non-null.
+            ptr: unsafe { NonNull::new_unchecked(ptr) },
             layout: current,
             lifetime: AllocTime::default(),
         };
 
-        alloc_traits::LocalAlloc::realloc(self, fake, target)
+        // Safety: satisfies our own invariants.
+        unsafe { alloc_traits::LocalAlloc::realloc(self, reconstructed, target) }
             .map(|alloc| alloc.ptr.as_ptr())
             .unwrap_or_else(core::ptr::null_mut)
     }
@@ -995,11 +1001,21 @@ unsafe impl<'alloc, T> LocalAlloc<'alloc> for Bump<T> {
         // succeeds, there is no copying necessary. This was the point of `Level` anyways.
 
         let new_alloc = LocalAlloc::alloc(self, layout)?;
-        core::ptr::copy_nonoverlapping(
-            alloc.ptr.as_ptr(),
-            new_alloc.ptr.as_ptr(),
-            layout.size().min(alloc.layout.size()).into(),
-        );
+
+        // Safety:
+        // - the old allocation is valid for the old size, as required of the caller.
+        // - the old allocation is valid for reads as it is an allocation of the allocator.
+        // - the new allocation is valid for the new size.
+        // - the new allocation is valid for writes as it was successful.
+        // - our effective copy is at most the old and new size.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                alloc.ptr.as_ptr(),
+                new_alloc.ptr.as_ptr(),
+                layout.size().min(alloc.layout.size()).into(),
+            );
+        }
+
         // No dealloc.
         return Some(new_alloc);
     }
