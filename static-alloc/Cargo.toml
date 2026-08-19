@@ -1,10 +1,11 @@
 [package]
 name = "static-alloc"
-version = "0.2.6"
+version = "0.3.0-prerelease"
 description = "A bump allocator on static memory for the alloc-traits crate"
-edition = "2018"
+edition = "2024"
 documentation = "https://docs.rs/static-alloc"
 categories = ["embedded", "memory-management", "no-std"]
+rust-version = "1.85"
 
 authors.workspace = true
 license.workspace = true
