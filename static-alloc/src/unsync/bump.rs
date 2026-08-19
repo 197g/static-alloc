@@ -93,16 +93,6 @@ pub struct MemBump {
     data: UnsafeCell<[MaybeUninit<u8>]>,
 }
 
-struct Header {
-    /// An index into the data field. This index
-    /// will always be an index to an element
-    /// that has not been allocated into.
-    /// Again this is wrapped in a Cell,
-    /// to allow modification with just a
-    /// &self reference.
-    index: Cell<usize>,
-}
-
 impl<T> Bump<T> {
     /// Create an allocator with uninitialized memory.
     ///
@@ -130,10 +120,15 @@ impl MemBump {
     /// Allocate some space to use for a bump allocator.
     pub fn new(capacity: usize) -> alloc::boxed::Box<Self> {
         let layout = Self::layout_from_size(capacity).expect("Bad layout");
+        // NOTE: if std allows, we'd very much like to use `Vec<Header>::try_with_capacity` here
+        // instead. But currently we can't leak that into a `Box<[MaybeUninit<Header>]>` which makes
+        // it unfortunately inert.
         let ptr = NonNull::new(unsafe { alloc::alloc::alloc(layout) })
             .unwrap_or_else(|| alloc::alloc::handle_alloc_error(layout));
         let ptr = ptr::slice_from_raw_parts_mut(ptr.as_ptr(), capacity);
-        unsafe { ptr::write(ptr as *mut Cell<usize>, Cell::new(0)) };
+        // Safety: `layout_from_size` ensures at least the header fits, and the allocation was
+        // obviously successful as just seen.
+        unsafe { ptr::write(ptr as *mut Header, Header::empty()) };
         unsafe { alloc::boxed::Box::from_raw(ptr as *mut MemBump) }
     }
 }
@@ -157,9 +152,12 @@ impl MemBump {
         let offset = mem.as_ptr().align_offset(header.align());
         // Align the memory for the header.
         let mem = mem.get_mut(offset..).ok_or(FromMemError { _inner: () })?;
-        mem.get_mut(..header.size())
-            .ok_or(FromMemError { _inner: () })?
-            .fill(MaybeUninit::new(0));
+        let hdr = mem
+            .get_mut(..header.size())
+            .ok_or(FromMemError { _inner: () })?;
+        // Safety: `mem` is a mutable ref, and we just verified the size and align. We'd consider
+        // MaybeUninit::as_bytes` and copy instead but it's not stable.
+        unsafe { ptr::write(hdr.as_mut_ptr().cast(), Header::empty()) };
         // Safety: we just verified the size, and pivoted to the correct alignment.
         Ok(unsafe { Self::from_mem_unchecked(mem) })
     }
@@ -198,7 +196,7 @@ impl MemBump {
         // Round down to the header alignment! The whole struct will occupy memory according to its
         // natural alignment. We must be prepared fro the `pad_to_align` so to speak.
         let datasize = datasize - datasize % header.align();
-        debug_assert!(Self::layout_from_size(datasize).map_or(false, |l| l.size() <= mem.len()));
+        debug_assert!(Self::layout_from_size(datasize).is_ok_and(|l| l.size() <= mem.len()));
 
         let raw = mem.as_mut_ptr() as *mut u8;
         // Turn it into a fat pointer with correct metadata for a `MemBump`.
@@ -501,8 +499,8 @@ impl MemBump {
     fn try_alloc(&self, layout: Layout) -> Option<Allocation<'_>> {
         let consumed = self.header.index.get();
         match self.try_alloc_at(layout, consumed) {
-            Ok(alloc) => return Some(alloc),
-            Err(Failure::Exhausted) => return None,
+            Ok(alloc) => Some(alloc),
+            Err(Failure::Exhausted) => None,
             Err(Failure::Mismatch { observed: _ }) => {
                 unreachable!("Count in Cell concurrently modified, this UB")
             }
@@ -517,9 +515,7 @@ impl MemBump {
         assert!(layout.size() > 0);
         let length = mem::size_of_val(&self.data);
         // We want to access contiguous slice, so cast to a single cell.
-        let data: &UnsafeCell<[MaybeUninit<u8>]> =
-            unsafe { &*(&self.data as *const _ as *const UnsafeCell<_>) };
-        let base_ptr = data.get() as *mut u8;
+        let base_ptr = self.data.get().cast::<u8>();
 
         let alignment = layout.align();
         let requested = layout.size();
@@ -592,7 +588,7 @@ impl<T> ops::Deref for Bump<T> {
         let data_layout = Layout::new::<MaybeUninit<T>>();
         // Construct a point with the meta data of a slice to `data`, but pointing to the whole
         // struct instead. This meta data is later copied to the meta data of `bump` when cast.
-        let ptr = self as *const Self as *const MaybeUninit<u8>;
+        let ptr = (self as *const Self).cast::<MaybeUninit<u8>>();
         let mem: *const [MaybeUninit<u8>] = ptr::slice_from_raw_parts(ptr, data_layout.size());
         // Now we have a pointer to MemBump with length meta data of the data slice.
         let bump = unsafe { &*(mem as *const MemBump) };
@@ -607,12 +603,30 @@ impl<T> ops::DerefMut for Bump<T> {
         let data_layout = Layout::new::<MaybeUninit<T>>();
         // Construct a point with the meta data of a slice to `data`, but pointing to the whole
         // struct instead. This meta data is later copied to the meta data of `bump` when cast.
-        let ptr = self as *mut Self as *mut MaybeUninit<u8>;
+        let ptr = (self as *mut Self).cast::<MaybeUninit<u8>>();
         let mem: *mut [MaybeUninit<u8>] = ptr::slice_from_raw_parts_mut(ptr, data_layout.size());
         // Now we have a pointer to MemBump with length meta data of the data slice.
         let bump = unsafe { &mut *(mem as *mut MemBump) };
         debug_assert_eq!(from_layout, Layout::for_value(bump));
         bump
+    }
+}
+
+struct Header {
+    /// An index into the data field. This index
+    /// will always be an index to an element
+    /// that has not been allocated into.
+    /// Again this is wrapped in a Cell,
+    /// to allow modification with just a
+    /// &self reference.
+    index: Cell<usize>,
+}
+
+impl Header {
+    const fn empty() -> Self {
+        Header {
+            index: Cell::new(0),
+        }
     }
 }
 

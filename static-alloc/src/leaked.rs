@@ -550,13 +550,13 @@ impl<'ctx, T> From<&'ctx mut [MaybeUninit<T>]> for LeakBox<'ctx, [MaybeUninit<T>
 
 impl<T: ?Sized> AsRef<T> for LeakBox<'_, T> {
     fn as_ref(&self) -> &T {
-        &**self
+        self
     }
 }
 
 impl<T: ?Sized> AsMut<T> for LeakBox<'_, T> {
     fn as_mut(&mut self) -> &mut T {
-        &mut **self
+        self
     }
 }
 

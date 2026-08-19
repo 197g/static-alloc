@@ -672,7 +672,7 @@ impl<T> Bump<T> {
         let aligned = unsafe {
             // SAFETY:
             // * `0 <= at_aligned < length` in bounds as checked above.
-            (base_ptr as *mut u8).add(at_aligned)
+            base_ptr.byte_add(at_aligned)
         };
 
         Ok(Allocation {
@@ -743,6 +743,7 @@ impl<T> Bump<T> {
     /// TODO: will be deprecated sooner or later in favor of a method that does not move the
     /// resource on failure.
     // #[deprecated = "Use leak_box and initialize it with the value. This does not move the value in the failure case."]
+    #[expect(clippy::mut_from_ref)] // This is an allocator.
     pub fn leak<V>(&self, val: V) -> Result<&mut V, LeakError<V>> {
         match self.get::<V>() {
             // SAFETY: Just allocated this for a `V`.
@@ -786,6 +787,7 @@ impl<T> Bump<T> {
     /// resource on failure.
     ///
     // #[deprecated = "Use leak_box_at and initialize it with the value. This does not move the value in the failure case."]
+    #[expect(clippy::mut_from_ref)] // This is an allocator.
     pub fn leak_at<V>(&self, val: V, level: Level) -> Result<(&mut V, Level), LeakError<V>> {
         let alloc = match self.get_at::<V>(level) {
             Ok(alloc) => alloc,
@@ -1017,7 +1019,7 @@ unsafe impl<'alloc, T> LocalAlloc<'alloc> for Bump<T> {
         }
 
         // No dealloc.
-        return Some(new_alloc);
+        Some(new_alloc)
     }
 
     unsafe fn dealloc(&'alloc self, _: alloc_traits::Allocation<'alloc>) {
