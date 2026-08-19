@@ -8,3 +8,9 @@ members = [
 	"unsize",
 	"without-alloc",
 ]
+
+[workspace.package]
+authors = ["Aurelia Molzer <5550310+197g@users.noreply.github.com>"]
+license = "MIT OR Apache-2.0 OR Zlib"
+repository = "https://github.com/197g/static-alloc"
+readme = "Readme.md"

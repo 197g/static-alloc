@@ -2,13 +2,14 @@
 name = "static-alloc"
 version = "0.2.6"
 description = "A bump allocator on static memory for the alloc-traits crate"
-authors = ["Aurelia Molzer <5550310+197g@users.noreply.github.com>"]
 edition = "2018"
-license = "MIT OR Apache-2.0 OR Zlib"
 documentation = "https://docs.rs/static-alloc"
-repository = "https://github.com/197g/static-alloc"
-readme = "Readme.md"
 categories = ["embedded", "memory-management", "no-std"]
+
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
 
 [package.metadata.docs.rs]
 all-features = true
@@ -19,9 +20,6 @@ portable-atomic = { version = "1", optional = true, default-features = false }
 
 [features]
 alloc = []
-# For apis depending on "try_reserve" (#48043).
-# Currently only used in a test for ensure future opportunities.
-nightly_try_reserve = []
 # Enables the `unsync::Chain` module. Note that this is explicitly outside the
 # SemVer stability guarantees!
 nightly_chain = ["alloc"]
@@ -37,7 +35,7 @@ path = "tests/vec.rs"
 [[test]]
 name = "vec_try"
 path = "tests/vec_try.rs"
-required-features = ["nightly_try_reserve"]
+required-features = []
 
 [[test]]
 name = "huuuuuge"
