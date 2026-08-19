@@ -4,7 +4,6 @@ version = "0.1.1"
 description = "Provides the Fill trait, an alternative to Extend for finite containers"
 edition = "2018"
 documentation = "https://docs.rs/fill"
-readme = "Readme.md"
 keywords = ["fill", "extend", "no-std", "no_std"]
 categories = ["embedded", "no-std", "data-structures"]
 
