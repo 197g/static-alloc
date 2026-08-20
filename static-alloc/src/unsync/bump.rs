@@ -584,6 +584,15 @@ impl MemBump {
 impl<T> ops::Deref for Bump<T> {
     type Target = MemBump;
     fn deref(&self) -> &MemBump {
+        assert_eq!(
+            mem::offset_of!(Bump<T>, _data),
+            // `data` follows header directly, using the macro requires a value for unsized types.
+            mem::size_of::<Header>(),
+            "This `Bump<{}>` can not be used as a `MemBump` since the reinterpretation changes the data layout. (Hint: its alignment must be at most {}).",
+            core::any::type_name::<T>(),
+            mem::size_of::<Header>(),
+        );
+
         let from_layout = Layout::for_value(self);
         let data_layout = Layout::new::<MaybeUninit<T>>();
         // Construct a point with the meta data of a slice to `data`, but pointing to the whole
@@ -599,6 +608,15 @@ impl<T> ops::Deref for Bump<T> {
 
 impl<T> ops::DerefMut for Bump<T> {
     fn deref_mut(&mut self) -> &mut MemBump {
+        assert_eq!(
+            mem::offset_of!(Bump<T>, _data),
+            // `data` follows header directly, using the macro requires a value for unsized types.
+            mem::size_of::<Header>(),
+            "This `Bump<{}>` can not be used as a `MemBump` since the reinterpretation changes the data layout. (Hint: its alignment must be at most {}).",
+            core::any::type_name::<T>(),
+            mem::size_of::<Header>(),
+        );
+
         let from_layout = Layout::for_value(self);
         let data_layout = Layout::new::<MaybeUninit<T>>();
         // Construct a point with the meta data of a slice to `data`, but pointing to the whole
