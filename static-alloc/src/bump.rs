@@ -144,17 +144,38 @@ use alloc_traits::{AllocTime, LocalAlloc, NonZeroLayout};
 /// demonstrate performance gains).
 ///
 /// WIP: slices.
+#[repr(C)]
 pub struct Bump<T> {
     /// While in shared state, an monotonic atomic counter of consumed bytes.
     ///
     /// While shared it is only mutated in `bump` which guarantees its invariants. In the mutable
     /// reference state it is modified arbitrarily.
-    consumed: AtomicUsize,
+    header: Header,
 
     /// Outer unsafe cell due to thread safety.
     /// Inner MaybeUninit because we padding may destroy initialization invariant
     /// on the bytes themselves, and hence drop etc must not assumed inited.
     storage: UnsafeCell<MaybeUninit<T>>,
+}
+
+/// A view of a bump allocator over an unsized arena.
+///
+/// The primary way of constructing this is a by [`Bump`] with some chosen layout descriptor type.
+/// It maintains the invariant of a tracking header being an accurate ledger for the use of its
+/// associated memory region. This implies you must not be allowed to combine any header and data.
+/// This strong association is protected by an area such as [`Bump`].
+///
+/// Note: You might think that we can
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct BumpView<'lt> {
+    header: &'lt Header,
+    storage: &'lt UnsafeCell<[MaybeUninit<u8>]>,
+}
+
+#[repr(C)]
+struct Header {
+    consumed: AtomicUsize,
 }
 
 /// A value could not be moved into a slab allocation.
@@ -285,7 +306,7 @@ impl<T> Bump<T> {
     /// The storage will contain uninitialized bytes.
     pub const fn uninit() -> Self {
         Bump {
-            consumed: AtomicUsize::new(0),
+            header: Header::empty(),
             storage: UnsafeCell::new(MaybeUninit::uninit()),
         }
     }
@@ -297,7 +318,7 @@ impl<T> Bump<T> {
     /// but there is no good reason not to provide it regardless.
     pub fn zeroed() -> Self {
         Bump {
-            consumed: AtomicUsize::new(0),
+            header: Header::empty(),
             storage: UnsafeCell::new(MaybeUninit::zeroed()),
         }
     }
@@ -307,7 +328,7 @@ impl<T> Bump<T> {
     /// Note that `storage` will never be dropped and there is no way to get it back.
     pub const fn new(storage: T) -> Self {
         Bump {
-            consumed: AtomicUsize::new(0),
+            header: Header::empty(),
             storage: UnsafeCell::new(MaybeUninit::new(storage)),
         }
     }
@@ -352,7 +373,20 @@ impl<T> Bump<T> {
     /// // ------------- immutable borrow later used here
     /// ```
     pub fn reset(&mut self) {
-        *self.consumed.get_mut() = 0;
+        self.header = Header::empty();
+    }
+
+    fn as_view(&self) -> BumpView<'_> {
+        BumpView {
+            header: &self.header,
+            storage: {
+                let base = self.storage.get();
+                let len = mem::size_of::<T>();
+                let data = core::ptr::slice_from_raw_parts(base as *const _, len);
+                // Safety: covers exactly the memory of `storage`, which is a `MaybeUninit`.
+                unsafe { &*(data as *const UnsafeCell<[_]>) }
+            },
+        }
     }
 
     /// Allocate a region of memory.
@@ -364,7 +398,7 @@ impl<T> Bump<T> {
     /// `GlobalAlloc` this is explicitely forbidden to request and would allow any behaviour but we
     /// instead strictly check it.
     pub fn alloc(&self, layout: Layout) -> Option<NonNull<u8>> {
-        Some(self.try_alloc(layout)?.ptr)
+        self.as_view().alloc(layout)
     }
 
     /// Try to allocate some layout with a precise base location.
@@ -376,17 +410,7 @@ impl<T> Bump<T> {
     /// # Panics
     /// This function may panic if the provided `level` is from a different slab.
     pub fn alloc_at(&self, layout: Layout, level: Level) -> Result<Allocation<'_>, Failure> {
-        let Allocation {
-            ptr,
-            lifetime,
-            level,
-        } = self.try_alloc_at(layout, level.0)?;
-
-        Ok(Allocation {
-            ptr: ptr.cast(),
-            lifetime,
-            level,
-        })
+        self.as_view().alloc_at(layout, level)
     }
 
     /// Get an allocation with detailed layout.
@@ -396,7 +420,7 @@ impl<T> Bump<T> {
     ///
     /// [`Uninit`]: ../uninit/struct.Uninit.html
     pub fn get_layout(&self, layout: Layout) -> Option<Allocation<'_>> {
-        self.try_alloc(layout)
+        self.as_view().get_layout(layout)
     }
 
     /// Get an allocation with detailed layout at a specific level.
@@ -409,7 +433,7 @@ impl<T> Bump<T> {
     ///
     /// [`Uninit`]: ../uninit/struct.Uninit.html
     pub fn get_layout_at(&self, layout: Layout, at: Level) -> Result<Allocation<'_>, Failure> {
-        self.try_alloc_at(layout, at.0)
+        self.as_view().get_layout_at(layout, at)
     }
 
     /// Get an allocation for a specific type.
@@ -434,22 +458,7 @@ impl<T> Bump<T> {
     /// assert_eq!(**cell_ref, 0xff);
     /// ```
     pub fn get<V>(&self) -> Option<Allocation<'_, V>> {
-        if mem::size_of::<V>() == 0 {
-            return Some(self.zst_fake_alloc());
-        }
-
-        let layout = Layout::new::<V>();
-        let Allocation {
-            ptr,
-            lifetime,
-            level,
-        } = self.try_alloc(layout)?;
-
-        Some(Allocation {
-            ptr: ptr.cast(),
-            lifetime,
-            level,
-        })
+        self.as_view().get()
     }
 
     /// Get an allocation for a specific type at a specific level.
@@ -458,30 +467,7 @@ impl<T> Bump<T> {
     ///
     /// [`get`]: #method.get
     pub fn get_at<V>(&self, level: Level) -> Result<Allocation<'_, V>, Failure> {
-        if mem::size_of::<V>() == 0 {
-            let fake = self.zst_fake_alloc();
-            // Note: zst_fake_alloc is a noop on the level, we may as well check after.
-            if fake.level != level {
-                return Err(Failure::Mismatch {
-                    observed: fake.level,
-                });
-            }
-            return Ok(fake);
-        }
-
-        let layout = Layout::new::<V>();
-        let Allocation {
-            ptr,
-            lifetime,
-            level,
-        } = self.try_alloc_at(layout, level.0)?;
-
-        Ok(Allocation {
-            // It has exactly size and alignment for `V` as requested.
-            ptr: ptr.cast(),
-            lifetime,
-            level,
-        })
+        self.as_view().get_at(level)
     }
 
     /// Move a value into an owned allocation.
@@ -539,8 +525,7 @@ impl<T> Bump<T> {
     /// drop(head);
     /// ```
     pub fn leak_box<V>(&self, val: V) -> Option<LeakBox<'_, V>> {
-        let Allocation { ptr, lifetime, .. } = self.get::<V>()?;
-        Some(unsafe { LeakBox::new_from_raw_non_null(ptr, val, lifetime) })
+        self.as_view().leak_box(val)
     }
 
     /// Move a value into an owned allocation.
@@ -549,8 +534,7 @@ impl<T> Bump<T> {
     ///
     /// [`leak_box`]: #method.leak_box
     pub fn leak_box_at<V>(&self, val: V, level: Level) -> Result<LeakBox<'_, V>, Failure> {
-        let Allocation { ptr, lifetime, .. } = self.get_at::<V>(level)?;
-        Ok(unsafe { LeakBox::new_from_raw_non_null(ptr, val, lifetime) })
+        self.as_view().leak_box_at(val, level)
     }
 
     /// Observe the current level.
@@ -560,7 +544,7 @@ impl<T> Bump<T> {
     /// synchronization of memory accesses, only that the values observed by the caller are a
     /// monotonically increasing seequence while a shared reference exists.
     pub fn level(&self) -> Level {
-        Level(self.consumed.load(Ordering::SeqCst))
+        self.as_view().level()
     }
 
     /// Get a pointer to an existing allocation at a specific level.
@@ -577,109 +561,8 @@ impl<T> Bump<T> {
     /// - As a corollary, particular it must be in-bounds of the allocator's memory.
     /// - Another consequence, the result pointer must be aligned for the requested type.
     pub unsafe fn get_unchecked<V>(&self, level: Level) -> Allocation<'_, V> {
-        debug_assert!(level.0 <= mem::size_of_val(&self.storage));
-
-        debug_assert!(
-            level <= self.level(),
-            "Tried to access an allocation that does not yet exist"
-        );
-
-        let base_ptr = self.storage.get() as *mut T as *mut u8;
-
-        // SAFETY: `level.0` is in bounds as assert above, or by the caller by having provided an
-        // existing allocation—all allocations we hand out are in bounds.
-        let alloc = unsafe { base_ptr.add(level.0) };
-        let ptr = NonNull::new(alloc).unwrap().cast::<V>();
-
-        debug_assert!(
-            ptr.as_ptr().is_aligned(),
-            "Tried to access an allocation with improper type"
-        );
-
-        Allocation {
-            level,
-            lifetime: AllocTime::default(),
-            ptr,
-        }
-    }
-
-    fn try_alloc(&self, layout: Layout) -> Option<Allocation<'_>> {
-        // Guess zero, this will fail when we try to access it and it isn't.
-        let mut consumed = 0;
-        loop {
-            match self.try_alloc_at(layout, consumed) {
-                Ok(alloc) => return Some(alloc),
-                Err(Failure::Exhausted) => return None,
-                Err(Failure::Mismatch { observed }) => consumed = observed.0,
-            }
-        }
-    }
-
-    /// Try to allocate some layout with a precise base location.
-    ///
-    /// The base location is the currently consumed byte count, without correction for the
-    /// alignment of the allocation. This will succeed if it can be allocate exactly at the
-    /// expected location.
-    ///
-    /// # Panics
-    /// This function panics if `expect_consumed` is larger than `length`.
-    fn try_alloc_at(
-        &self,
-        layout: Layout,
-        expect_consumed: usize,
-    ) -> Result<Allocation<'_>, Failure> {
-        assert!(layout.size() > 0);
-        let length = mem::size_of::<T>();
-        let base_ptr = self.storage.get() as *mut T as *mut u8;
-
-        let alignment = layout.align();
-        let requested = layout.size();
-
-        // Ensure no overflows when calculating offets within.
-        assert!(expect_consumed <= length);
-
-        let available = length.checked_sub(expect_consumed).unwrap();
-        let ptr_to = base_ptr.wrapping_add(expect_consumed);
-        let offset = ptr_to.align_offset(alignment);
-
-        if requested > available.saturating_sub(offset) {
-            return Err(Failure::Exhausted); // exhausted
-        }
-
-        // `size` can not be zero, saturation will thus always make this true.
-        assert!(offset < available);
-        let at_aligned = expect_consumed.checked_add(offset).unwrap();
-        let new_consumed = at_aligned.checked_add(requested).unwrap();
-        // new_consumed
-        //    = consumed + offset + requested  [lines above]
-        //   <= consumed + available  [bail out: exhausted]
-        //   <= length  [first line of loop]
-        // So it's ok to store `allocated` into `consumed`.
-        assert!(new_consumed <= length);
-        assert!(at_aligned < length);
-
-        // Try to actually allocate.
-        match self.bump(expect_consumed, new_consumed) {
-            Ok(()) => (),
-            Err(observed) => {
-                // Someone else was faster, if you want it then recalculate again.
-                return Err(Failure::Mismatch {
-                    observed: Level(observed),
-                });
-            }
-        }
-
-        let aligned = unsafe {
-            // SAFETY:
-            // * `0 <= at_aligned < length` in bounds as checked above.
-            base_ptr.byte_add(at_aligned)
-        };
-
-        Ok(Allocation {
-            ptr: NonNull::new(aligned).unwrap(),
-            lifetime: AllocTime::default(),
-            level: Level(new_consumed),
-        })
+        // Safety: forwarding requirements.
+        unsafe { self.as_view().get_unchecked(level) }
     }
 
     /// Allocate a value for the lifetime of the allocator.
@@ -799,9 +682,208 @@ impl<T> Bump<T> {
         let mutref = unsafe { alloc.leak(val) };
         Ok((mutref, level))
     }
+}
+
+impl<'lt> BumpView<'lt> {
+    pub fn alloc(self, layout: Layout) -> Option<NonNull<u8>> {
+        Some(self.try_alloc(layout)?.ptr)
+    }
+
+    pub fn alloc_at(self, layout: Layout, level: Level) -> Result<Allocation<'lt>, Failure> {
+        let Allocation {
+            ptr,
+            lifetime,
+            level,
+        } = self.try_alloc_at(layout, level.0)?;
+
+        Ok(Allocation {
+            ptr: ptr.cast(),
+            lifetime,
+            level,
+        })
+    }
+
+    pub fn get_layout(self, layout: Layout) -> Option<Allocation<'lt>> {
+        self.try_alloc(layout)
+    }
+
+    pub fn get_layout_at(self, layout: Layout, at: Level) -> Result<Allocation<'lt>, Failure> {
+        self.try_alloc_at(layout, at.0)
+    }
+
+    pub fn get<V>(self) -> Option<Allocation<'lt, V>> {
+        if mem::size_of::<V>() == 0 {
+            return Some(self.zst_fake_alloc());
+        }
+
+        let layout = Layout::new::<V>();
+        let Allocation {
+            ptr,
+            lifetime,
+            level,
+        } = self.try_alloc(layout)?;
+
+        Some(Allocation {
+            ptr: ptr.cast(),
+            lifetime,
+            level,
+        })
+    }
+
+    pub fn get_at<V>(self, level: Level) -> Result<Allocation<'lt, V>, Failure> {
+        if mem::size_of::<V>() == 0 {
+            let fake = self.zst_fake_alloc();
+            // Note: zst_fake_alloc is a noop on the level, we may as well check after.
+            if fake.level != level {
+                return Err(Failure::Mismatch {
+                    observed: fake.level,
+                });
+            }
+            return Ok(fake);
+        }
+
+        let layout = Layout::new::<V>();
+        let Allocation {
+            ptr,
+            lifetime,
+            level,
+        } = self.try_alloc_at(layout, level.0)?;
+
+        Ok(Allocation {
+            // It has exactly size and alignment for `V` as requested.
+            ptr: ptr.cast(),
+            lifetime,
+            level,
+        })
+    }
+
+    pub fn leak_box<V>(self, val: V) -> Option<LeakBox<'lt, V>> {
+        let Allocation { ptr, lifetime, .. } = self.get::<V>()?;
+        Some(unsafe { LeakBox::new_from_raw_non_null(ptr, val, lifetime) })
+    }
+
+    pub fn leak_box_at<V>(self, val: V, level: Level) -> Result<LeakBox<'lt, V>, Failure> {
+        let Allocation { ptr, lifetime, .. } = self.get_at::<V>(level)?;
+        Ok(unsafe { LeakBox::new_from_raw_non_null(ptr, val, lifetime) })
+    }
+
+    pub fn level(&self) -> Level {
+        Level(self.header.consumed.load(Ordering::SeqCst))
+    }
+
+    /// # Safety
+    ///
+    /// - The level must refer to an existing allocation, i.e. it must previously have been
+    ///   returned in [`Allocation::level`].
+    /// - As a corollary, particular it must be in-bounds of the allocator's memory.
+    /// - Another consequence, the result pointer must be aligned for the requested type.
+    pub unsafe fn get_unchecked<V>(self, level: Level) -> Allocation<'lt, V> {
+        debug_assert!(level.0 <= mem::size_of_val(&self.storage));
+
+        debug_assert!(
+            level <= self.level(),
+            "Tried to access an allocation that does not yet exist"
+        );
+
+        let base_ptr = self.storage.get().cast::<u8>();
+        // SAFETY: `level.0` is in bounds as assert above, or by the caller by having provided an
+        // existing allocation—all allocations we hand out are in bounds.
+        let alloc = unsafe { base_ptr.add(level.0) };
+        let ptr = NonNull::new(alloc).unwrap().cast::<V>();
+
+        debug_assert!(
+            ptr.as_ptr().is_aligned(),
+            "Tried to access an allocation with improper type"
+        );
+
+        Allocation {
+            level,
+            lifetime: AllocTime::default(),
+            ptr,
+        }
+    }
+
+    fn try_alloc(self, layout: Layout) -> Option<Allocation<'lt>> {
+        // Guess zero, this will fail when we try to access it and it isn't.
+        let mut consumed = 0;
+        loop {
+            match self.try_alloc_at(layout, consumed) {
+                Ok(alloc) => return Some(alloc),
+                Err(Failure::Exhausted) => return None,
+                Err(Failure::Mismatch { observed }) => consumed = observed.0,
+            }
+        }
+    }
+
+    /// Try to allocate some layout with a precise base location.
+    ///
+    /// The base location is the currently consumed byte count, without correction for the
+    /// alignment of the allocation. This will succeed if it can be allocate exactly at the
+    /// expected location.
+    ///
+    /// # Panics
+    /// This function panics if `expect_consumed` is larger than `length`.
+    fn try_alloc_at(
+        self,
+        layout: Layout,
+        expect_consumed: usize,
+    ) -> Result<Allocation<'lt>, Failure> {
+        assert!(layout.size() > 0);
+        let length = self.storage.get().len();
+        let base_ptr = self.storage.get().cast::<u8>();
+
+        let alignment = layout.align();
+        let requested = layout.size();
+
+        // Ensure no overflows when calculating offets within.
+        assert!(expect_consumed <= length);
+
+        let available = length.checked_sub(expect_consumed).unwrap();
+        let ptr_to = base_ptr.wrapping_add(expect_consumed);
+        let offset = ptr_to.align_offset(alignment);
+
+        if requested > available.saturating_sub(offset) {
+            return Err(Failure::Exhausted); // exhausted
+        }
+
+        // `size` can not be zero, saturation will thus always make this true.
+        assert!(offset < available);
+        let at_aligned = expect_consumed.checked_add(offset).unwrap();
+        let new_consumed = at_aligned.checked_add(requested).unwrap();
+        // new_consumed
+        //    = consumed + offset + requested  [lines above]
+        //   <= consumed + available  [bail out: exhausted]
+        //   <= length  [first line of loop]
+        // So it's ok to store `allocated` into `consumed`.
+        assert!(new_consumed <= length);
+        assert!(at_aligned < length);
+
+        // Try to actually allocate.
+        match self.bump(expect_consumed, new_consumed) {
+            Ok(()) => (),
+            Err(observed) => {
+                // Someone else was faster, if you want it then recalculate again.
+                return Err(Failure::Mismatch {
+                    observed: Level(observed),
+                });
+            }
+        }
+
+        let aligned = unsafe {
+            // SAFETY:
+            // * `0 <= at_aligned < length` in bounds as checked above.
+            base_ptr.byte_add(at_aligned)
+        };
+
+        Ok(Allocation {
+            ptr: NonNull::new(aligned).unwrap(),
+            lifetime: AllocTime::default(),
+            level: Level(new_consumed),
+        })
+    }
 
     /// 'Allocate' a ZST.
-    fn zst_fake_alloc<Z>(&self) -> Allocation<'_, Z> {
+    fn zst_fake_alloc<Z>(&self) -> Allocation<'lt, Z> {
         Allocation::for_zst(self.level())
     }
 
@@ -820,8 +902,19 @@ impl<T> Bump<T> {
     /// It also panics if the expected value is larger than the new value.
     fn bump(&self, expect_consumed: usize, new_consumed: usize) -> Result<(), usize> {
         assert!(expect_consumed <= new_consumed);
-        assert!(new_consumed <= mem::size_of::<T>());
+        assert!(new_consumed <= self.storage.get().len());
+        self.header.bump(expect_consumed, new_consumed)
+    }
+}
 
+impl Header {
+    const fn empty() -> Self {
+        Header {
+            consumed: AtomicUsize::new(0),
+        }
+    }
+
+    fn bump(&self, expect_consumed: usize, new_consumed: usize) -> Result<(), usize> {
         self.consumed
             .compare_exchange(
                 expect_consumed,
@@ -916,9 +1009,31 @@ impl<T> LeakError<T> {
 // SAFETY: at most one thread gets a pointer to each chunk of data.
 unsafe impl<T> Sync for Bump<T> {}
 
+// SAFETY: at most one thread gets a pointer to each chunk of data.
+unsafe impl Sync for BumpView<'_> {}
+unsafe impl Send for BumpView<'_> {}
+
 unsafe impl<T> GlobalAlloc for Bump<T> {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        Bump::alloc(self, layout)
+        // Safety: just handing over arguments exactly as is. These two allocators are 'compatible'
+        // in the sense they hold onto the same value handles.
+        unsafe { GlobalAlloc::alloc(&self.as_view(), layout) }
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, current: Layout, new_size: usize) -> *mut u8 {
+        // Safety: just handing over arguments exactly as is. These two allocators are 'compatible'
+        // in the sense they hold onto the same value handles.
+        unsafe { GlobalAlloc::realloc(&self.as_view(), ptr, current, new_size) }
+    }
+
+    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
+        // We are a slab allocator and do not deallocate.
+    }
+}
+
+unsafe impl GlobalAlloc for BumpView<'_> {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        BumpView::alloc(*self, layout)
             .map(NonNull::as_ptr)
             .unwrap_or_else(null_mut)
     }
@@ -964,7 +1079,60 @@ fn layout_reallocated(
 
 unsafe impl<'alloc, T> LocalAlloc<'alloc> for Bump<T> {
     fn alloc(&'alloc self, layout: NonZeroLayout) -> Option<alloc_traits::Allocation<'alloc>> {
-        let raw_alloc = Bump::get_layout(self, layout.into())?;
+        let raw_alloc = self.get_layout(layout.into())?;
+        Some(alloc_traits::Allocation {
+            ptr: raw_alloc.ptr,
+            layout,
+            lifetime: AllocTime::default(),
+        })
+    }
+
+    unsafe fn realloc(
+        &'alloc self,
+        alloc: alloc_traits::Allocation<'alloc>,
+        layout: NonZeroLayout,
+    ) -> Option<alloc_traits::Allocation<'alloc>> {
+        if alloc.ptr.as_ptr() as usize % layout.align() == 0 && alloc.layout.size() >= layout.size()
+        {
+            // Obvious fit, nothing to do.
+            return Some(alloc_traits::Allocation {
+                ptr: alloc.ptr,
+                layout,
+                lifetime: alloc.lifetime,
+            });
+        }
+
+        // TODO: we could try to allocate at the exact level that the allocation ends. If this
+        // succeeds, there is no copying necessary. This was the point of `Level` anyways.
+
+        let new_alloc = LocalAlloc::alloc(self, layout)?;
+
+        // Safety:
+        // - the old allocation is valid for the old size, as required of the caller.
+        // - the old allocation is valid for reads as it is an allocation of the allocator.
+        // - the new allocation is valid for the new size.
+        // - the new allocation is valid for writes as it was successful.
+        // - our effective copy is at most the old and new size.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                alloc.ptr.as_ptr(),
+                new_alloc.ptr.as_ptr(),
+                layout.size().min(alloc.layout.size()).into(),
+            );
+        }
+
+        // No dealloc.
+        Some(new_alloc)
+    }
+
+    unsafe fn dealloc(&'alloc self, _: alloc_traits::Allocation<'alloc>) {
+        // We are a slab allocator and do not deallocate.
+    }
+}
+
+unsafe impl<'alloc> LocalAlloc<'alloc> for BumpView<'alloc> {
+    fn alloc(&'alloc self, layout: NonZeroLayout) -> Option<alloc_traits::Allocation<'alloc>> {
+        let raw_alloc = self.get_layout(layout.into())?;
         Some(alloc_traits::Allocation {
             ptr: raw_alloc.ptr,
             layout,
