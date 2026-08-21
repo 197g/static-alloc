@@ -174,7 +174,7 @@ impl<'ctx, T> LeakBox<'ctx, T> {
         // * `ptr` points to an allocation with correct layout for `V`.
         // * It is valid for write as it is the only pointer to it.
         // * The allocation lives for at least `'ctx`.
-        core::ptr::write(pointer.as_ptr(), val);
+        unsafe { core::ptr::write(pointer.as_ptr(), val) };
         Self { pointer, lifetime, }
     }
 }
@@ -237,9 +237,11 @@ impl<'ctx, T: ?Sized> LeakBox<'ctx, T> {
     /// sound.
     pub unsafe fn from_raw(pointer: *mut T) -> Self {
         debug_assert!(!pointer.is_null(), "Null pointer passed to LeakBox::from_raw");
+
         LeakBox {
             lifetime: AllocTime::default(),
-            pointer: NonNull::new_unchecked(pointer),
+            // Safety: caller guarantees this points to a valid instance. Null never does that.
+            pointer: unsafe { NonNull::new_unchecked(pointer)  },
         }
     }
 
@@ -548,13 +550,13 @@ impl<'ctx, T> From<&'ctx mut [MaybeUninit<T>]> for LeakBox<'ctx, [MaybeUninit<T>
 
 impl<T: ?Sized> AsRef<T> for LeakBox<'_, T> {
     fn as_ref(&self) -> &T {
-        &**self
+        self
     }
 }
 
 impl<T: ?Sized> AsMut<T> for LeakBox<'_, T> {
     fn as_mut(&mut self) -> &mut T {
-        &mut **self
+        self
     }
 }
 

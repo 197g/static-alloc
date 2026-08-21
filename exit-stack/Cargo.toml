@@ -11,7 +11,7 @@ readme = "Readme.md"
 categories = ["embedded", "memory-management", "no-std"]
 
 [dependencies]
-static-alloc = { path = "../static-alloc", version = "0.2.1" }
+static-alloc = { path = "../static-alloc", version = "0.3.0-prerelease" }
 
 [dev-dependencies]
 pin-utils = "0.1"

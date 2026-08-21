@@ -1,5 +1,3 @@
-#![feature(try_reserve)]
-
 use static_alloc::Bump;
 
 // Provide more memory than #[test] needs for the setup.
