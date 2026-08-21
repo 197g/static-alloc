@@ -158,6 +158,22 @@ pub struct Bump<T> {
     storage: UnsafeCell<MaybeUninit<T>>,
 }
 
+/// An unsized bump allocator arena.
+///
+/// This does not enforce any particular alignment on its storage. You can, in general, expect that
+/// it is at least 4-byte aligned but should not rely on it for soundness purposes.
+#[repr(C)]
+pub struct BumpSlice {
+    /// While in shared state, an monotonic atomic counter of consumed bytes.
+    ///
+    /// While shared it is only mutated in `bump` which guarantees its invariants. In the mutable
+    /// reference state it is modified arbitrarily.
+    header: Header,
+
+    /// See [`Bump::storage`], same function but with a concrete type.
+    storage: UnsafeCell<[MaybeUninit<u8>]>,
+}
+
 /// A view of a bump allocator over an unsized arena.
 ///
 /// The primary way of constructing this is a by [`Bump`] with some chosen layout descriptor type.
@@ -166,7 +182,6 @@ pub struct Bump<T> {
 /// This strong association is protected by an area such as [`Bump`].
 ///
 /// Note: You might think that we can
-#[repr(C)]
 #[derive(Clone, Copy)]
 struct BumpView<'lt> {
     header: &'lt Header,
@@ -331,6 +346,91 @@ impl<T> Bump<T> {
             header: Header::empty(),
             storage: UnsafeCell::new(MaybeUninit::new(storage)),
         }
+    }
+
+    /// Convert this into a type-erased byte-slice bump allocator.
+    ///
+    /// This returns `None` if the layout of `T` causes the layout of `self` to not be compatible
+    /// with the layout of [`BumpSlice`]. The criteria is that `T` must have an alignment not greater
+    /// than that of `usize` (which is used internally for accounting the used portion).
+    ///
+    /// For instance, this is guaranteed to work:
+    ///
+    /// ```
+    /// use static_alloc::Bump;
+    ///
+    /// let byte_array: Bump<[u8; 128]> = Bump::uninit();
+    /// assert!(byte_array.as_bump_slice().is_some());
+    /// let usize_array: Bump<[usize; 128]> = Bump::uninit();
+    /// assert!(usize_array.as_bump_slice().is_some());
+    /// ```
+    ///
+    /// On the other hand, this is very unlikely to work on any platform:
+    ///
+    /// ```
+    /// # if core::mem::size_of::<usize>() < 32 {
+    /// use static_alloc::Bump;
+    ///
+    /// #[repr(C, align(32))]
+    /// struct WhyAlignSoHigh([u8; 128]);
+    ///
+    /// let oof: Bump<WhyAlignSoHigh> = Bump::uninit();
+    /// assert!(oof.as_bump_slice().is_none());
+    /// # }
+    /// ```
+    pub const fn as_bump_slice(&self) -> Option<&BumpSlice> {
+        // Safety:
+        if mem::offset_of!(Self, storage) != mem::size_of::<Header>() {
+            return None;
+        }
+
+        let data_len = mem::size_of::<T>();
+        // Construct a point with the meta data of a slice to `data`, but pointing to the whole
+        // struct instead. This meta data is later copied to the meta data of `bump` when cast.
+        let ptr = (self as *const Self).cast::<MaybeUninit<u8>>();
+        let mem: *const [MaybeUninit<u8>] = core::ptr::slice_from_raw_parts(ptr, data_len);
+
+        // Safety: The layout of this type is compatible with ours. Both are `repr(C)`, so we can go
+        // field-by-field and the total layout.
+        //
+        // - Firstly, they share a `Header` field.
+        // - Secondly, `data` is located immediately behind `Header`. In `self` we verify this
+        //   above, in `BumpSlice` that follows directly from `u8` being 1-aligned.
+        // - The alignment requirement of `MemBump`, exactly that of `Header`, is fulfilled as that
+        //   is also a field of `Self`.
+        // - The size of both values is compatible. We construct the metadata such that the return
+        //   value covers exactly the length of the `storage` field. What follows is padding to
+        //   cover the alignment requirement. The `Self` type has the same alignment and same offset
+        //   past-the-field and hence will receive the same padding.
+        Some(unsafe { &*(mem as *const BumpSlice) })
+    }
+
+    /// Mutable variant of [`Self::as_bump_slice`].
+    pub const fn as_mut_bump_slice(&mut self) -> Option<&mut BumpSlice> {
+        // Safety:
+        if mem::offset_of!(Self, storage) != mem::size_of::<Header>() {
+            return None;
+        }
+
+        let data_len = mem::size_of::<T>();
+        // Construct a point with the meta data of a slice to `data`, but pointing to the whole
+        // struct instead. This meta data is later copied to the meta data of `bump` when cast.
+        let ptr = (self as *mut Self).cast::<MaybeUninit<u8>>();
+        let mem: *mut [MaybeUninit<u8>] = core::ptr::slice_from_raw_parts_mut(ptr, data_len);
+
+        // Safety: The layout of this type is compatible with ours. Both are `repr(C)`, so we can go
+        // field-by-field and the total layout.
+        //
+        // - Firstly, they share a `Header` field.
+        // - Secondly, `data` is located immediately behind `Header`. In `self` we verify this
+        //   above, in `MemBump` that follows directly from `u8` being 1-aligned.
+        // - The alignment requirement of `MemBump`, exactly that of `Header`, is fulfilled as that
+        //   is also a field of `Self`.
+        // - The size of both values is compatible. We construct the metadata such that the return
+        //   value covers exactly the length of the `storage` field. What follows is padding to
+        //   cover the alignment requirement. The `Self` type has the same alignment and same offset
+        //   past-the-field and hence will receive the same padding.
+        Some(unsafe { &mut *(mem as *mut BumpSlice) })
     }
 
     /// Reset the bump allocator.
@@ -654,6 +754,360 @@ impl<T> Bump<T> {
     /// use static_alloc::Bump;
     ///
     /// let local: Bump<[u64; 3]> = Bump::uninit();
+    ///
+    /// let base = local.level();
+    /// let (one, level) = local.leak_at(1_u64, base).unwrap();
+    /// // Will panic when an allocation happens in between.
+    /// let (two, _) = local.leak_at(2_u64, level).unwrap();
+    ///
+    /// assert_eq!((one as *const u64).wrapping_offset(1), two);
+    /// ```
+    ///
+    /// [`leak`]: #method.leak
+    /// [`level`]: #method.level
+    ///
+    /// TODO: will be deprecated sooner or later in favor of a method that does not move the
+    /// resource on failure.
+    ///
+    // #[deprecated = "Use leak_box_at and initialize it with the value. This does not move the value in the failure case."]
+    #[expect(clippy::mut_from_ref)] // This is an allocator.
+    pub fn leak_at<V>(&self, val: V, level: Level) -> Result<(&mut V, Level), LeakError<V>> {
+        let alloc = match self.get_at::<V>(level) {
+            Ok(alloc) => alloc,
+            Err(err) => return Err(LeakError::new(val, err)),
+        };
+
+        // SAFETY: Just allocated this for a `V`.
+        let level = alloc.level;
+        let mutref = unsafe { alloc.leak(val) };
+        Ok((mutref, level))
+    }
+}
+
+impl BumpSlice {
+    /// Reset the bump allocator.
+    ///
+    /// Requires a mutable reference, as no allocations can be active when doing it. This behaves
+    /// as if a fresh instance was assigned but it does not overwrite the bytes in the backing
+    /// storage. (You can unsafely rely on this).
+    ///
+    /// ## Usage
+    ///
+    /// ```
+    /// # use static_alloc::bump::{Bump, BumpSlice};
+    /// let mut stack_buf = Bump::<usize>::uninit();
+    /// let stack_buf = stack_buf.as_mut_bump_slice().unwrap();
+    ///
+    /// let bytes = stack_buf.leak(0usize.to_be_bytes()).unwrap();
+    /// // Now the bump allocator is full.
+    /// assert!(stack_buf.leak(0u8).is_err());
+    ///
+    /// // We can reuse if we are okay with forgetting the previous value.
+    /// stack_buf.reset();
+    /// let val = stack_buf.leak(0usize).unwrap();
+    /// ```
+    ///
+    /// Trying to use the previous value does not work, as the stack is still borrowed. Note that
+    /// any user unsafely tracking the lifetime must also ensure this through proper lifetimes that
+    /// guarantee that borrows are alive for appropriate times.
+    ///
+    /// ```compile_fail
+    /// // error[E0502]: cannot borrow `stack_buf` as mutable because it is also borrowed as immutable
+    /// # use static_alloc::bump::{Bump, BumpSlice};
+    /// let mut stack_buf = Bump::<usize>::uninit();
+    /// let stack_buf = stack_buf.as_mut_bump_slice().unwrap();
+    ///
+    /// let bytes = stack_buf.leak(0usize).unwrap();
+    /// //          --------- immutably borrow occurs here
+    /// stack_buf.reset();
+    /// // ^^^^^^^ mutable borrow occurs here.
+    /// let other = stack_buf.leak(0usize).unwrap();
+    ///
+    /// *bytes += *other;
+    /// // ------------- immutable borrow later used here
+    /// ```
+    pub fn reset(&mut self) {
+        self.header = Header::empty();
+    }
+
+    fn as_view(&self) -> BumpView<'_> {
+        BumpView {
+            header: &self.header,
+            storage: &self.storage,
+        }
+    }
+
+    /// Allocate a region of memory.
+    ///
+    /// This is a safe alternative to [GlobalAlloc::alloc](#impl-GlobalAlloc).
+    ///
+    /// # Panics
+    /// This function will panic if the requested layout has a size of `0`. For the use in a
+    /// `GlobalAlloc` this is explicitely forbidden to request and would allow any behaviour but we
+    /// instead strictly check it.
+    pub fn alloc(&self, layout: Layout) -> Option<NonNull<u8>> {
+        self.as_view().alloc(layout)
+    }
+
+    /// Try to allocate some layout with a precise base location.
+    ///
+    /// The base location is the currently consumed byte count, without correction for the
+    /// alignment of the allocation. This will succeed if it can be allocate exactly at the
+    /// expected location.
+    ///
+    /// # Panics
+    /// This function may panic if the provided `level` is from a different slab.
+    pub fn alloc_at(&self, layout: Layout, level: Level) -> Result<Allocation<'_>, Failure> {
+        self.as_view().alloc_at(layout, level)
+    }
+
+    /// Get an allocation with detailed layout.
+    ///
+    /// Provides an [`Uninit`] wrapping several aspects of initialization in a safe interface,
+    /// bound by the lifetime of the reference to the allocator.
+    ///
+    /// [`Uninit`]: ../uninit/struct.Uninit.html
+    pub fn get_layout(&self, layout: Layout) -> Option<Allocation<'_>> {
+        self.as_view().get_layout(layout)
+    }
+
+    /// Get an allocation with detailed layout at a specific level.
+    ///
+    /// Provides an [`Uninit`] wrapping several aspects of initialization in a safe interface,
+    /// bound by the lifetime of the reference to the allocator.
+    ///
+    /// Since the underlying allocation is the same, it would be `unsafe` but justified to fuse
+    /// this allocation with the preceding or succeeding one.
+    ///
+    /// [`Uninit`]: ../uninit/struct.Uninit.html
+    pub fn get_layout_at(&self, layout: Layout, at: Level) -> Result<Allocation<'_>, Failure> {
+        self.as_view().get_layout_at(layout, at)
+    }
+
+    /// Get an allocation for a specific type.
+    ///
+    /// It is not yet initialized but provides a safe interface for that initialization.
+    ///
+    /// ## Usage
+    ///
+    /// ```
+    /// # use static_alloc::bump::{Bump, BumpSlice};
+    /// use core::cell::{Ref, RefCell};
+    ///
+    /// let backing: Bump<[Ref<'static, usize>; 1]> = Bump::uninit();
+    /// let slab = backing.as_bump_slice().unwrap();
+    ///
+    /// let data = RefCell::new(0xff);
+    ///
+    /// // We can place a `Ref` here but we did not yet.
+    /// let alloc = slab.get::<Ref<usize>>().unwrap();
+    /// let cell_ref = unsafe {
+    ///     alloc.leak(data.borrow())
+    /// };
+    ///
+    /// assert_eq!(**cell_ref, 0xff);
+    /// ```
+    pub fn get<V>(&self) -> Option<Allocation<'_, V>> {
+        self.as_view().get()
+    }
+
+    /// Get an allocation for a specific type at a specific level.
+    ///
+    /// See [`get`] for usage.
+    ///
+    /// [`get`]: #method.get
+    pub fn get_at<V>(&self, level: Level) -> Result<Allocation<'_, V>, Failure> {
+        self.as_view().get_at(level)
+    }
+
+    /// Move a value into an owned allocation.
+    ///
+    /// For safely initializing a value _after_ a successful allocation, see [`LeakBox::write`].
+    ///
+    /// [`LeakBox::write`]: ../leaked/struct.LeakBox.html#method.write
+    ///
+    /// ## Usage
+    ///
+    /// This can be used to push the value into a caller provided stack buffer where it lives
+    /// longer than the current stack frame. For example, you might create a linked list with a
+    /// dynamic number of values living in the frame below while still being dropped properly. This
+    /// is impossible to do with a return value.
+    ///
+    /// ```
+    /// # use static_alloc::bump::{Bump, BumpSlice};
+    /// # use static_alloc::leaked::LeakBox;
+    /// fn rand() -> usize { 4 }
+    ///
+    /// enum Chain<'buf, T> {
+    ///    Tail,
+    ///    Link(T, LeakBox<'buf, Self>),
+    /// }
+    ///
+    /// fn make_chain<T>(buf: &BumpSlice, mut new_node: impl FnMut() -> T)
+    ///     -> Option<Chain<'_, T>>
+    /// {
+    ///     let count = rand();
+    ///     let mut chain = Chain::Tail;
+    ///     for _ in 0..count {
+    ///         let node = new_node();
+    ///         chain = Chain::Link(node, buf.leak_box(chain)?);
+    ///     }
+    ///     Some(chain)
+    /// }
+    ///
+    /// struct Node (usize);
+    /// impl Drop for Node {
+    ///     fn drop(&mut self) {
+    ///         println!("Dropped {}", self.0);
+    ///     }
+    /// }
+    /// let mut counter = 0..;
+    /// let new_node = || Node(counter.next().unwrap());
+    ///
+    /// let buffer: Bump<[u8; 128]> = Bump::uninit();
+    /// let buffer = buffer.as_bump_slice().unwrap();
+    /// let head = make_chain(buffer, new_node).unwrap();
+    ///
+    /// // Prints the message in reverse order.
+    /// // Dropped 3
+    /// // Dropped 2
+    /// // Dropped 1
+    /// // Dropped 0
+    /// drop(head);
+    /// ```
+    pub fn leak_box<V>(&self, val: V) -> Option<LeakBox<'_, V>> {
+        self.as_view().leak_box(val)
+    }
+
+    /// Move a value into an owned allocation.
+    ///
+    /// See [`leak_box`] for usage.
+    ///
+    /// [`leak_box`]: #method.leak_box
+    pub fn leak_box_at<V>(&self, val: V, level: Level) -> Result<LeakBox<'_, V>, Failure> {
+        self.as_view().leak_box_at(val, level)
+    }
+
+    /// Observe the current level.
+    ///
+    /// Keep in mind that concurrent usage of the same slab may modify the level before you are
+    /// able to use it in `alloc_at`. Calling this method provides also no other guarantees on
+    /// synchronization of memory accesses, only that the values observed by the caller are a
+    /// monotonically increasing seequence while a shared reference exists.
+    pub fn level(&self) -> Level {
+        self.as_view().level()
+    }
+
+    /// Get a pointer to an existing allocation at a specific level.
+    ///
+    /// The resulting pointer may be used to access an arbitrary allocation starting at the pointer
+    /// (i.e. including additional allocations immediately afterwards) but the caller is
+    /// responsible for ensuring that these accesses do not overlap other accesses. There must be
+    /// no more life [`LeakBox`] to any allocation being accessed this way.
+    ///
+    /// # Safety
+    ///
+    /// - The level must refer to an existing allocation, i.e. it must previously have been
+    ///   returned in [`Allocation::level`].
+    /// - As a corollary, particular it must be in-bounds of the allocator's memory.
+    /// - Another consequence, the result pointer must be aligned for the requested type.
+    pub unsafe fn get_unchecked<V>(&self, level: Level) -> Allocation<'_, V> {
+        // Safety: forwarding requirements.
+        unsafe { self.as_view().get_unchecked(level) }
+    }
+
+    /// Allocate a value for the lifetime of the allocator.
+    ///
+    /// The value is leaked in the sense that
+    ///
+    /// 1. the drop implementation of the allocated value is never called;
+    /// 2. reusing the memory for another allocation in the same `Bump` requires manual unsafe code
+    ///    to handle dropping and reinitialization.
+    ///
+    /// However, it does not mean that the underlying memory used for the allocated value is never
+    /// reclaimed. If the `Bump` itself is a stack value then it will get reclaimed together with
+    /// it.
+    ///
+    /// ## Safety notice
+    ///
+    /// It is important to understand that it is undefined behaviour to reuse the allocation for
+    /// the *whole lifetime* of the returned reference. That is, dropping the allocation in-place
+    /// while the reference is still within its lifetime comes with the exact same unsafety caveats
+    /// as [`ManuallyDrop::drop`].
+    ///
+    /// ```
+    /// # use static_alloc::bump::{Bump, BumpSlice};
+    /// #[derive(Debug, Default)]
+    /// struct FooBar {
+    ///     // ...
+    /// # _private: [u8; 1],
+    /// }
+    ///
+    /// let local: Bump<[FooBar; 3]> = Bump::uninit();
+    /// let local = local.as_bump_slice().unwrap();
+    /// let one = local.leak(FooBar::default()).unwrap();
+    ///
+    /// // Dangerous but justifiable.
+    /// let one = unsafe {
+    ///     // Ensures there is no current mutable borrow.
+    ///     core::ptr::drop_in_place(&mut *one);
+    /// };
+    /// ```
+    ///
+    /// ## Usage
+    ///
+    /// ```
+    /// use static_alloc::bump::{Bump, BumpSlice};
+    ///
+    /// let local: Bump<[u64; 3]> = Bump::uninit();
+    /// let local = local.as_bump_slice().unwrap();
+    ///
+    /// let one = local.leak(0_u64).unwrap();
+    /// assert_eq!(*one, 0);
+    /// *one = 42;
+    /// ```
+    ///
+    /// ## Limitations
+    ///
+    /// Only sized values can be allocated in this manner for now, unsized values are blocked on
+    /// stabilization of [`ptr::slice_from_raw_parts`]. We can not otherwise get a fat pointer to
+    /// the allocated region.
+    ///
+    /// [`ptr::slice_from_raw_parts`]: https://github.com/rust-lang/rust/issues/36925
+    /// [`ManuallyDrop::drop`]: https://doc.rust-lang.org/beta/std/mem/struct.ManuallyDrop.html#method.drop
+    ///
+    /// TODO: will be deprecated sooner or later in favor of a method that does not move the
+    /// resource on failure.
+    // #[deprecated = "Use leak_box and initialize it with the value. This does not move the value in the failure case."]
+    #[expect(clippy::mut_from_ref)] // This is an allocator.
+    pub fn leak<V>(&self, val: V) -> Result<&mut V, LeakError<V>> {
+        match self.get::<V>() {
+            // SAFETY: Just allocated this for a `V`.
+            Some(alloc) => Ok(unsafe { alloc.leak(val) }),
+            None => Err(LeakError::new(val, Failure::Exhausted)),
+        }
+    }
+
+    /// Allocate a value with a precise location.
+    ///
+    /// See [`leak`] for basics on allocation of values.
+    ///
+    /// The level is an identifer for a base location (more at [`level`]). This will succeed if it
+    /// can be allocate exactly at the expected location.
+    ///
+    /// This method will return the new level of the slab allocator. A next allocation at the
+    /// returned level will be placed next to this allocation, only separated by necessary padding
+    /// from alignment. In particular, this is the same strategy as applied for the placement of
+    /// `#[repr(C)]` struct members. (Except for the final padding at the last member to the full
+    /// struct alignment.)
+    ///
+    /// ## Usage
+    ///
+    /// ```
+    /// use static_alloc::bump::{Bump, BumpSlice};
+    ///
+    /// let local: Bump<[u64; 3]> = Bump::uninit();
+    /// let local = local.as_bump_slice().unwrap();
     ///
     /// let base = local.level();
     /// let (one, level) = local.leak_at(1_u64, base).unwrap();
