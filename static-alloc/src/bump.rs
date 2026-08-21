@@ -1232,7 +1232,7 @@ impl<'lt> BumpView<'lt> {
     /// - As a corollary, particular it must be in-bounds of the allocator's memory.
     /// - Another consequence, the result pointer must be aligned for the requested type.
     pub unsafe fn get_unchecked<V>(self, level: Level) -> Allocation<'lt, V> {
-        debug_assert!(level.0 <= mem::size_of_val(&self.storage));
+        debug_assert!(level.0 <= mem::size_of_val(self.storage));
 
         debug_assert!(
             level <= self.level(),
