@@ -62,6 +62,30 @@ use crate::leaked::LeakBox;
 ///     handle_request(&local_page, request);
 /// }
 /// ```
+///
+/// ## Coercion into [`MemBump`]
+///
+/// This allocator nominally implements [`Deref`](core::ops::Deref) into [`MemBump`]. However, the
+/// layout of these two structs is equivalent only for types that have at most an alignment of
+/// [`usize`] (e.g. arrays of `u8`, `u16`, or more integers depending on the platform pointer size).
+///
+/// Warning: An attempt to use this dereference with an invalid type will trigger a
+/// post-monomorphization error! This choice was made to avoid complicated encoding of the
+/// precondition into a viral trait bound and considering you're likely to use very concrete
+/// instances that either work, or would have been UB.
+///
+/// For instance, this will *fail* to compile:
+///
+/// ```compile_fail
+/// use static_alloc::unsync::{Bump, MemBump};
+///
+/// #[repr(align(32))]
+/// struct HighlyAligned([u8; 128]);
+///
+/// let mut arena: Bump<HighlyAligned> = Bump::uninit();
+/// // Fails here, attempting to resolve `impl Deref for Bump<HighlyAligned>`.
+/// let _ = arena.get::<u32>();
+/// ```
 #[repr(C)]
 pub struct Bump<T> {
     /// The index used in allocation.
@@ -581,17 +605,24 @@ impl MemBump {
     }
 }
 
+struct EnsureDerefIsApplicable<T>(core::marker::PhantomData<T>);
+
+impl<T> EnsureDerefIsApplicable<T> {
+    pub const ASSERT: () = {
+        if mem::offset_of!(Bump<T>, _data) != mem::size_of::<Header>() {
+            panic!(
+                // `data` follows header directly, using the macro requires a value for unsized types.
+                "This `unsync::Bump` can not be used as a `MemBump` since the reinterpretation changes the data layout. (Hint: its alignment must be at most `usize`).",
+            );
+        }
+    };
+}
+
 impl<T> ops::Deref for Bump<T> {
     type Target = MemBump;
     fn deref(&self) -> &MemBump {
-        assert_eq!(
-            mem::offset_of!(Bump<T>, _data),
-            // `data` follows header directly, using the macro requires a value for unsized types.
-            mem::size_of::<Header>(),
-            "This `Bump<{}>` can not be used as a `MemBump` since the reinterpretation changes the data layout. (Hint: its alignment must be at most {}).",
-            core::any::type_name::<T>(),
-            mem::size_of::<Header>(),
-        );
+        // This provokes post-mono error!
+        let _: () = EnsureDerefIsApplicable::<T>::ASSERT;
 
         let from_layout = Layout::for_value(self);
         let data_layout = Layout::new::<MaybeUninit<T>>();
@@ -608,14 +639,8 @@ impl<T> ops::Deref for Bump<T> {
 
 impl<T> ops::DerefMut for Bump<T> {
     fn deref_mut(&mut self) -> &mut MemBump {
-        assert_eq!(
-            mem::offset_of!(Bump<T>, _data),
-            // `data` follows header directly, using the macro requires a value for unsized types.
-            mem::size_of::<Header>(),
-            "This `Bump<{}>` can not be used as a `MemBump` since the reinterpretation changes the data layout. (Hint: its alignment must be at most {}).",
-            core::any::type_name::<T>(),
-            mem::size_of::<Header>(),
-        );
+        // This provokes post-mono error!
+        let _: () = EnsureDerefIsApplicable::<T>::ASSERT;
 
         let from_layout = Layout::for_value(self);
         let data_layout = Layout::new::<MaybeUninit<T>>();
