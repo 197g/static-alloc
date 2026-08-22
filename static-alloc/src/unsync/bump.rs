@@ -103,7 +103,7 @@ pub struct FromMemError {
 
 /// A dynamically sized allocation block in which any type can be allocated.
 #[repr(C)]
-pub struct MemBump {
+pub struct BumpSlice {
     header: Header,
 
     /// The data slice of a node. This slice
@@ -140,7 +140,7 @@ impl<T> Bump<T> {
 }
 
 #[cfg(feature = "alloc")]
-impl MemBump {
+impl BumpSlice {
     /// Allocate some space to use for a bump allocator.
     pub fn new(capacity: usize) -> alloc::boxed::Box<Self> {
         let layout = Self::layout_from_size(capacity).expect("Bad layout");
@@ -153,11 +153,11 @@ impl MemBump {
         // Safety: `layout_from_size` ensures at least the header fits, and the allocation was
         // obviously successful as just seen.
         unsafe { ptr::write(ptr as *mut Header, Header::empty()) };
-        unsafe { alloc::boxed::Box::from_raw(ptr as *mut MemBump) }
+        unsafe { alloc::boxed::Box::from_raw(ptr as *mut BumpSlice) }
     }
 }
 
-impl MemBump {
+impl BumpSlice {
     /// Initialize a bump allocator from existing memory.
     ///
     /// # Usage
@@ -226,7 +226,7 @@ impl MemBump {
         // Turn it into a fat pointer with correct metadata for a `MemBump`.
         // Safety:
         // - The data is writable as we owned
-        unsafe { &mut *(ptr::slice_from_raw_parts_mut(raw, datasize) as *mut MemBump) }
+        unsafe { &mut *(ptr::slice_from_raw_parts_mut(raw, datasize) as *mut BumpSlice) }
     }
 
     /// Unwrap the memory owned by an unsized bump allocator.
@@ -619,8 +619,8 @@ impl<T> EnsureDerefIsApplicable<T> {
 }
 
 impl<T> ops::Deref for Bump<T> {
-    type Target = MemBump;
-    fn deref(&self) -> &MemBump {
+    type Target = BumpSlice;
+    fn deref(&self) -> &BumpSlice {
         // This provokes post-mono error!
         let _: () = EnsureDerefIsApplicable::<T>::ASSERT;
 
@@ -631,14 +631,14 @@ impl<T> ops::Deref for Bump<T> {
         let ptr = (self as *const Self).cast::<MaybeUninit<u8>>();
         let mem: *const [MaybeUninit<u8>] = ptr::slice_from_raw_parts(ptr, data_layout.size());
         // Now we have a pointer to MemBump with length meta data of the data slice.
-        let bump = unsafe { &*(mem as *const MemBump) };
+        let bump = unsafe { &*(mem as *const BumpSlice) };
         debug_assert_eq!(from_layout, Layout::for_value(bump));
         bump
     }
 }
 
 impl<T> ops::DerefMut for Bump<T> {
-    fn deref_mut(&mut self) -> &mut MemBump {
+    fn deref_mut(&mut self) -> &mut BumpSlice {
         // This provokes post-mono error!
         let _: () = EnsureDerefIsApplicable::<T>::ASSERT;
 
@@ -649,7 +649,7 @@ impl<T> ops::DerefMut for Bump<T> {
         let ptr = (self as *mut Self).cast::<MaybeUninit<u8>>();
         let mem: *mut [MaybeUninit<u8>] = ptr::slice_from_raw_parts_mut(ptr, data_layout.size());
         // Now we have a pointer to MemBump with length meta data of the data slice.
-        let bump = unsafe { &mut *(mem as *mut MemBump) };
+        let bump = unsafe { &mut *(mem as *mut BumpSlice) };
         debug_assert_eq!(from_layout, Layout::for_value(bump));
         bump
     }
@@ -676,6 +676,6 @@ impl Header {
 #[test]
 fn mem_bump_derefs_correctly() {
     let bump = Bump::<usize>::zeroed();
-    let mem: &MemBump = &bump;
+    let mem: &BumpSlice = &bump;
     assert_eq!(mem::size_of_val(&bump), mem::size_of_val(mem));
 }
