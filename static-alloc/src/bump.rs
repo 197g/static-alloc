@@ -1485,6 +1485,24 @@ unsafe impl<T> GlobalAlloc for Bump<T> {
     }
 }
 
+unsafe impl GlobalAlloc for &'static BumpSlice {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // Safety: just handing over arguments exactly as is. These two allocators are 'compatible'
+        // in the sense they hold onto the same value handles.
+        unsafe { GlobalAlloc::alloc(&self.as_view(), layout) }
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, current: Layout, new_size: usize) -> *mut u8 {
+        // Safety: just handing over arguments exactly as is. These two allocators are 'compatible'
+        // in the sense they hold onto the same value handles.
+        unsafe { GlobalAlloc::realloc(&self.as_view(), ptr, current, new_size) }
+    }
+
+    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
+        // We are a slab allocator and do not deallocate.
+    }
+}
+
 unsafe impl GlobalAlloc for BumpView<'_> {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         BumpView::alloc(*self, layout)
