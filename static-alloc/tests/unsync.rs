@@ -5,8 +5,7 @@ use static_alloc::unsync::BumpSlice;
 #[test]
 fn raw_from_mem() {
     let mut memory = [MaybeUninit::new(0); 128];
-    let bump = BumpSlice::from_mem(&mut memory)
-        .expect("Enough memory for its metadata");
+    let bump = BumpSlice::from_mem(&mut memory).expect("Enough memory for its metadata");
 
     let n1 = bump.bump_box::<u64>().unwrap();
     let n2 = bump.bump_box::<u64>().unwrap();
@@ -31,9 +30,7 @@ fn allocate_with_fixed_capacity() {
     const CAPACITY: usize = 16;
     let bump = BumpSlice::new(CAPACITY);
     for i in 0..CAPACITY {
-        bump.get::<u8>().unwrap_or_else(|| {
-            panic!("works {}", i)
-        });
+        bump.get::<u8>().unwrap_or_else(|| panic!("works {}", i));
     }
     assert!(bump.get::<u8>().is_none());
 }

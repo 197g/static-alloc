@@ -7,9 +7,13 @@ fn each_thread_one() {
     // Static but not the global allocator.
     static BUMP: Bump<[u64; COUNT]> = Bump::uninit();
 
-    let threads = (0..COUNT).map(|i| thread::spawn(move || {
-        BUMP.leak(i).unwrap();
-    })).collect::<Vec<_>>();
+    let threads = (0..COUNT)
+        .map(|i| {
+            thread::spawn(move || {
+                BUMP.leak(i).unwrap();
+            })
+        })
+        .collect::<Vec<_>>();
 
     threads
         .into_iter()

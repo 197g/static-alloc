@@ -2,13 +2,12 @@
 //!
 //! FIXME(breaking): Naming. `leaking` implies the `Drop` of the value as well but we do the
 //! precise opposite.
-use core::pin::Pin;
 use alloc_traits::AllocTime;
+use core::pin::Pin;
 
 use core::{
     alloc::Layout,
-    fmt,
-    hash,
+    fmt, hash,
     marker::PhantomData,
     mem::{ManuallyDrop, MaybeUninit},
     ops::{Deref, DerefMut},
@@ -50,10 +49,7 @@ impl<T> Alloca<T> {
     /// llvm might still reserve stack space for all variants including a probe and thus
     /// prematurely assume we have hit the bottom of the available stack space. This is not very
     /// likely to occur in practice.
-    pub fn run<R>(
-        &self,
-        run: impl FnOnce(&mut [MaybeUninit<T>]) -> R
-    ) -> R {
+    pub fn run<R>(&self, run: impl FnOnce(&mut [MaybeUninit<T>]) -> R) -> R {
         // Required size to surely have enough space for an aligned allocation.
         let required_size = self.padded_layout().size();
 
@@ -98,10 +94,7 @@ impl<T> Alloca<T> {
         }
     }
 
-    fn run_with<I, R, F:FnOnce(&mut [MaybeUninit<T>]) -> R>(
-        &self,
-        run: F
-    ) -> R {
+    fn run_with<I, R, F: FnOnce(&mut [MaybeUninit<T>]) -> R>(&self, run: F) -> R {
         use crate::unsync::Bump;
         let mem = Bump::<I>::uninit();
         let slot = mem.bump_array::<T>(self.len).unwrap();
@@ -175,7 +168,7 @@ impl<'ctx, T> LeakBox<'ctx, T> {
         // * It is valid for write as it is the only pointer to it.
         // * The allocation lives for at least `'ctx`.
         unsafe { core::ptr::write(pointer.as_ptr(), val) };
-        Self { pointer, lifetime, }
+        Self { pointer, lifetime }
     }
 }
 
@@ -236,12 +229,15 @@ impl<'ctx, T: ?Sized> LeakBox<'ctx, T> {
     /// Dropping this `LeakBox` will drop the instance, which the caller must also guarantee to be
     /// sound.
     pub unsafe fn from_raw(pointer: *mut T) -> Self {
-        debug_assert!(!pointer.is_null(), "Null pointer passed to LeakBox::from_raw");
+        debug_assert!(
+            !pointer.is_null(),
+            "Null pointer passed to LeakBox::from_raw"
+        );
 
         LeakBox {
             lifetime: AllocTime::default(),
             // Safety: caller guarantees this points to a valid instance. Null never does that.
-            pointer: unsafe { NonNull::new_unchecked(pointer)  },
+            pointer: unsafe { NonNull::new_unchecked(pointer) },
         }
     }
 
@@ -315,7 +311,8 @@ impl<'ctx, T: ?Sized> LeakBox<'ctx, T> {
     /// # Some(()) }
     /// ```
     pub fn leak<'a>(this: Self) -> &'a mut T
-        where 'ctx: 'a
+    where
+        'ctx: 'a,
     {
         let pointer = LeakBox::into_raw(this);
         // SAFETY:
@@ -341,7 +338,7 @@ impl<T: 'static> LeakBox<'static, T> {
     /// Consider this example:
     ///
     /// ```compile_fail
-    /// use static_alloc::{Bump, leaked::LeakBox}; 
+    /// use static_alloc::{Bump, leaked::LeakBox};
     ///
     /// async fn example(x: usize) -> usize {
     ///     // Holding reference across yield point.
@@ -365,7 +362,7 @@ impl<T: 'static> LeakBox<'static, T> {
     /// use of a macro or unsafe on the caller's part. Now, with the correct usage of `into_pin`:
     ///
     /// ```
-    /// use static_alloc::{Bump, leaked::LeakBox}; 
+    /// use static_alloc::{Bump, leaked::LeakBox};
     ///
     /// async fn example(x: usize) -> usize {
     ///     // Holding reference across yield point.
@@ -442,7 +439,7 @@ impl<'ctx, T> LeakBox<'ctx, T> {
     /// about any actual use case.
     pub fn from_mut(val: &'ctx mut T) -> Self
     where
-        T: Copy
+        T: Copy,
     {
         // SAFETY:
         // * Is valid instance

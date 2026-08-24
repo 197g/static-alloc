@@ -7,14 +7,11 @@ use core::{
     ptr::{self, NonNull},
 };
 
-use alloc::{
-    alloc::alloc_zeroed,
-    boxed::Box,
-};
+use alloc::{alloc::alloc_zeroed, boxed::Box};
 
 use crate::bump::Failure;
-use crate::unsync::bump::MemBump;
 use crate::leaked::LeakBox;
+use crate::unsync::bump::MemBump;
 
 /// An error representing an error while construction
 /// a [`Chain`].
@@ -62,9 +59,9 @@ impl Chain {
     }
 
     /// Attempts to allocate `elem` within the allocator.
-    pub fn bump_box<'bump, T: 'bump>(&'bump self)
-        -> Result<LeakBox<'bump, MaybeUninit<T>>, Failure>
-    {
+    pub fn bump_box<'bump, T: 'bump>(
+        &'bump self,
+    ) -> Result<LeakBox<'bump, MaybeUninit<T>>, Failure> {
         let root = self.root().ok_or(Failure::Exhausted)?;
         root.as_bump().bump_box()
     }
@@ -79,9 +76,7 @@ impl Chain {
         let self_bump = self.root.take();
 
         match new.root() {
-            None => {
-                self.root.set(self_bump)
-            }
+            None => self.root.set(self_bump),
             Some(root) => {
                 unsafe { root.set_next(self_bump) };
                 self.root.set(new.root.take())
@@ -145,9 +140,7 @@ impl Link {
     /// Take over the control over the tail.
     pub(crate) fn take_next(&self) -> Option<Box<Link>> {
         let ptr = self.next.take()?;
-        Some(unsafe {
-            Box::from_raw(ptr.as_ptr())
-        })
+        Some(unsafe { Box::from_raw(ptr.as_ptr()) })
     }
 
     pub(crate) fn as_bump(&self) -> &MemBump {
@@ -162,17 +155,14 @@ impl Link {
 
     unsafe fn alloc_raw(layout: Layout) -> Result<NonNull<u8>, RawAllocError> {
         let ptr = alloc_zeroed(layout);
-        NonNull::new(ptr).ok_or_else(|| {
-            RawAllocError::new(layout.size(), RawAllocFailure::Exhausted)
-        })
+        NonNull::new(ptr)
+            .ok_or_else(|| RawAllocError::new(layout.size(), RawAllocFailure::Exhausted))
     }
 
     /// Allocates a MemBump and returns it.
     pub(crate) fn alloc(capacity: usize) -> Result<NonNull<Self>, RawAllocError> {
         let layout = Self::layout_from_size(capacity)
-            .map_err(|_| {
-                RawAllocError::new(capacity, RawAllocFailure::Layout)
-            })?;
+            .map_err(|_| RawAllocError::new(capacity, RawAllocFailure::Layout))?;
 
         unsafe {
             let raw = Link::alloc_raw(layout)?;

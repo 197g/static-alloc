@@ -56,7 +56,7 @@ pub mod unsync;
 
 // Can't use the macro-call itself within the `doc` attribute. So force it to eval it as part of
 // the macro invocation.
-// 
+//
 // The inspiration for the macro and implementation is from
 // <https://github.com/GuillaumeGomez/doc-comment>
 //
