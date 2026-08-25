@@ -13,8 +13,8 @@ use crate::leaked::LeakBox;
 
 /// A bump allocator whose storage capacity and alignment is given by `T`.
 ///
-/// This type dereferences to the generic `MemBump` that implements the allocation behavior. Note
-/// that `MemBump` is an unsized type. In contrast this type is sized so it is possible to
+/// This type dereferences to the generic `BumpSlice` that implements the allocation behavior. Note
+/// that `BumpSlice` is an unsized type. In contrast this type is sized so it is possible to
 /// construct an instance on the stack or leak one from another bump allocator such as a global
 /// one.
 ///
@@ -33,9 +33,9 @@ use crate::leaked::LeakBox;
 ///
 /// ```
 /// use static_alloc::unsync::Bump;
-/// # use static_alloc::unsync::MemBump;
-/// # fn subroutine_one(_: &MemBump) {}
-/// # fn subroutine_two(_: &MemBump) {}
+/// # use static_alloc::unsync::BumpSlice;
+/// # fn subroutine_one(_: &BumpSlice) {}
+/// # fn subroutine_two(_: &BumpSlice) {}
 ///
 /// let mut stack_buffer: Bump<[usize; 64]> = Bump::uninit();
 /// subroutine_one(&stack_buffer);
@@ -51,9 +51,9 @@ use crate::leaked::LeakBox;
 ///
 #[cfg_attr(feature = "alloc", doc = "```")]
 #[cfg_attr(not(feature = "alloc"), doc = "```ignore")]
-/// use static_alloc::unsync::{Bump, MemBump};
+/// use static_alloc::unsync::{Bump, BumpSlice};
 /// # struct Request;
-/// # fn handle_request(_: &MemBump, _: Request) {}
+/// # fn handle_request(_: &BumpSlice, _: Request) {}
 /// # fn iterate_recv() -> Option<Request> { None }
 /// let mut local_page: Box<Bump<[u64; 64]>> = Box::new(Bump::uninit());
 ///
@@ -63,9 +63,9 @@ use crate::leaked::LeakBox;
 /// }
 /// ```
 ///
-/// ## Coercion into [`MemBump`]
+/// ## Coercion into [`BumpSlice`]
 ///
-/// This allocator nominally implements [`Deref`](core::ops::Deref) into [`MemBump`]. However, the
+/// This allocator nominally implements [`Deref`](core::ops::Deref) into [`BumpSlice`]. However, the
 /// layout of these two structs is equivalent only for types that have at most an alignment of
 /// [`usize`] (e.g. arrays of `u8`, `u16`, or more integers depending on the platform pointer size).
 ///
@@ -77,7 +77,7 @@ use crate::leaked::LeakBox;
 /// For instance, this will *fail* to compile:
 ///
 /// ```compile_fail
-/// use static_alloc::unsync::{Bump, MemBump};
+/// use static_alloc::unsync::{Bump, BumpSlice};
 ///
 /// #[repr(align(32))]
 /// struct HighlyAligned([u8; 128]);
@@ -92,7 +92,7 @@ pub struct Bump<T> {
     _index: Cell<usize>,
     /// The backing storage for raw allocated data.
     _data: UnsafeCell<MaybeUninit<T>>,
-    // Warning: when changing the data layout, you must change `MemBump` as well.
+    // Warning: when changing the data layout, you must change `BumpSlice` as well.
 }
 
 /// An error used when one could not re-use raw memory for a bump allocator.
@@ -103,7 +103,7 @@ pub struct FromMemError {
 
 /// A dynamically sized allocation block in which any type can be allocated.
 #[repr(C)]
-pub struct MemBump {
+pub struct BumpSlice {
     header: Header,
 
     /// The data slice of a node. This slice
@@ -140,7 +140,7 @@ impl<T> Bump<T> {
 }
 
 #[cfg(feature = "alloc")]
-impl MemBump {
+impl BumpSlice {
     /// Allocate some space to use for a bump allocator.
     pub fn new(capacity: usize) -> alloc::boxed::Box<Self> {
         let layout = Self::layout_from_size(capacity).expect("Bad layout");
@@ -153,21 +153,21 @@ impl MemBump {
         // Safety: `layout_from_size` ensures at least the header fits, and the allocation was
         // obviously successful as just seen.
         unsafe { ptr::write(ptr as *mut Header, Header::empty()) };
-        unsafe { alloc::boxed::Box::from_raw(ptr as *mut MemBump) }
+        unsafe { alloc::boxed::Box::from_raw(ptr as *mut BumpSlice) }
     }
 }
 
-impl MemBump {
+impl BumpSlice {
     /// Initialize a bump allocator from existing memory.
     ///
     /// # Usage
     ///
     /// ```
     /// use core::mem::MaybeUninit;
-    /// use static_alloc::unsync::MemBump;
+    /// use static_alloc::unsync::BumpSlice;
     ///
     /// let mut backing = [MaybeUninit::new(0); 128];
-    /// let alloc = MemBump::from_mem(&mut backing)?;
+    /// let alloc = BumpSlice::from_mem(&mut backing)?;
     ///
     /// # Ok::<(), static_alloc::unsync::FromMemError>(())
     /// ```
@@ -193,8 +193,8 @@ impl MemBump {
     ///
     /// # Safety
     ///
-    /// The memory must contain data that has been previously wrapped as a `MemBump`, exactly. The
-    /// only endorsed sound form of obtaining such memory is [`MemBump::into_mem`].
+    /// The memory must contain data that has been previously wrapped as a `BumpSlice`, exactly. The
+    /// only endorsed sound form of obtaining such memory is [`BumpSlice::into_mem`].
     ///
     /// Warning: Any _use_ of the memory will have invalidated all pointers to allocated objects,
     /// more specifically the provenance of these pointers is no longer valid! You _must_ derive
@@ -223,10 +223,10 @@ impl MemBump {
         debug_assert!(Self::layout_from_size(datasize).is_ok_and(|l| l.size() <= mem.len()));
 
         let raw = mem.as_mut_ptr() as *mut u8;
-        // Turn it into a fat pointer with correct metadata for a `MemBump`.
+        // Turn it into a fat pointer with correct metadata for a `BumpSlice`.
         // Safety:
         // - The data is writable as we owned
-        unsafe { &mut *(ptr::slice_from_raw_parts_mut(raw, datasize) as *mut MemBump) }
+        unsafe { &mut *(ptr::slice_from_raw_parts_mut(raw, datasize) as *mut BumpSlice) }
     }
 
     /// Unwrap the memory owned by an unsized bump allocator.
@@ -240,15 +240,15 @@ impl MemBump {
     ///
     /// ```rust
     /// use core::mem::MaybeUninit;
-    /// use static_alloc::unsync::MemBump;
+    /// use static_alloc::unsync::BumpSlice;
     ///
     /// # let mut backing = [MaybeUninit::new(0); 128];
-    /// # let alloc = MemBump::from_mem(&mut backing)?;
-    /// let memory: &mut [_] = MemBump::into_mem(alloc);
+    /// # let alloc = BumpSlice::from_mem(&mut backing)?;
+    /// let memory: &mut [_] = BumpSlice::into_mem(alloc);
     /// assert!(memory.len() <= 128, "Not guaranteed to use all memory");
     ///
     /// // Safety: We have not touched the memory itself.
-    /// unsafe { MemBump::from_mem_unchecked(memory) };
+    /// unsafe { BumpSlice::from_mem_unchecked(memory) };
     /// # Ok::<(), static_alloc::unsync::FromMemError>(())
     /// ```
     pub fn into_mem<'lt>(this: LeakBox<'lt, Self>) -> &'lt mut [MaybeUninit<u8>] {
@@ -257,10 +257,10 @@ impl MemBump {
         unsafe { &mut *ptr::slice_from_raw_parts_mut(mem_pointer, layout.size()) }
     }
 
-    /// Returns the layout for the `header` of a `MemBump`.
+    /// Returns the layout for the `header` of a `BumpSlice`.
     /// The definition of `header` in this case is all the
     /// fields that come **before** the `data` field.
-    /// If any of the fields of a MemBump are modified,
+    /// If any of the fields of a BumpSlice are modified,
     /// this function likely has to be modified too.
     fn header_layout() -> Layout {
         Layout::new::<Cell<usize>>()
@@ -271,7 +271,7 @@ impl MemBump {
         Layout::array::<UnsafeCell<MaybeUninit<u8>>>(size)
     }
 
-    /// Returns a layout for a MemBump where the length of the data field is `size`.
+    /// Returns a layout for a BumpSlice where the length of the data field is `size`.
     /// This relies on the two functions defined above.
     pub(crate) fn layout_from_size(size: usize) -> Result<Layout, LayoutError> {
         let data_tail = Self::data_layout(size)?;
@@ -279,7 +279,7 @@ impl MemBump {
         Ok(layout.pad_to_align())
     }
 
-    /// Returns capacity of this `MemBump`.
+    /// Returns capacity of this `BumpSlice`.
     /// This is how many *bytes* can be allocated
     /// within this node.
     pub const fn capacity(&self) -> usize {
@@ -290,9 +290,9 @@ impl MemBump {
     ///
     /// Note that *any* use of the pointer must be done with extreme care as it may invalidate
     /// existing references into the allocated region. Furthermore, bytes may not be initialized.
-    /// The length of the valid region is [`MemBump::capacity`].
+    /// The length of the valid region is [`BumpSlice::capacity`].
     ///
-    /// Prefer [`MemBump::get_unchecked`] for reconstructing a prior allocation.
+    /// Prefer [`BumpSlice::get_unchecked`] for reconstructing a prior allocation.
     pub fn data_ptr(&self) -> NonNull<u8> {
         NonNull::new(self.data.get() as *mut u8).expect("from a reference")
     }
@@ -386,9 +386,9 @@ impl MemBump {
     ///
     /// ```
     /// # use core::mem::MaybeUninit;
-    /// # use static_alloc::unsync::MemBump;
+    /// # use static_alloc::unsync::BumpSlice;
     /// # let mut backing = [MaybeUninit::new(0); 128];
-    /// # let alloc = MemBump::from_mem(&mut backing).unwrap();
+    /// # let alloc = BumpSlice::from_mem(&mut backing).unwrap();
     /// // Create an initial allocation.
     /// let level = alloc.level();
     /// let allocation = alloc.get_at::<usize>(level)?;
@@ -408,9 +408,9 @@ impl MemBump {
     ///
     /// ```
     /// # use core::mem::MaybeUninit;
-    /// # use static_alloc::{leaked::LeakBox, unsync::MemBump};
+    /// # use static_alloc::{leaked::LeakBox, unsync::BumpSlice};
     /// # let mut backing = [MaybeUninit::new(0); 128];
-    /// # let alloc = MemBump::from_mem(&mut backing).unwrap();
+    /// # let alloc = BumpSlice::from_mem(&mut backing).unwrap();
     /// let level = alloc.level();
     /// alloc.get_at::<usize>(level)?;
     ///
@@ -612,15 +612,15 @@ impl<T> EnsureDerefIsApplicable<T> {
         if mem::offset_of!(Bump<T>, _data) != mem::size_of::<Header>() {
             panic!(
                 // `data` follows header directly, using the macro requires a value for unsized types.
-                "This `unsync::Bump` can not be used as a `MemBump` since the reinterpretation changes the data layout. (Hint: its alignment must be at most `usize`).",
+                "This `unsync::Bump` can not be used as a `BumpSlice` since the reinterpretation changes the data layout. (Hint: its alignment must be at most `usize`).",
             );
         }
     };
 }
 
 impl<T> ops::Deref for Bump<T> {
-    type Target = MemBump;
-    fn deref(&self) -> &MemBump {
+    type Target = BumpSlice;
+    fn deref(&self) -> &BumpSlice {
         // This provokes post-mono error!
         let _: () = EnsureDerefIsApplicable::<T>::ASSERT;
 
@@ -630,15 +630,15 @@ impl<T> ops::Deref for Bump<T> {
         // struct instead. This meta data is later copied to the meta data of `bump` when cast.
         let ptr = (self as *const Self).cast::<MaybeUninit<u8>>();
         let mem: *const [MaybeUninit<u8>] = ptr::slice_from_raw_parts(ptr, data_layout.size());
-        // Now we have a pointer to MemBump with length meta data of the data slice.
-        let bump = unsafe { &*(mem as *const MemBump) };
+        // Now we have a pointer to BumpSlice with length meta data of the data slice.
+        let bump = unsafe { &*(mem as *const BumpSlice) };
         debug_assert_eq!(from_layout, Layout::for_value(bump));
         bump
     }
 }
 
 impl<T> ops::DerefMut for Bump<T> {
-    fn deref_mut(&mut self) -> &mut MemBump {
+    fn deref_mut(&mut self) -> &mut BumpSlice {
         // This provokes post-mono error!
         let _: () = EnsureDerefIsApplicable::<T>::ASSERT;
 
@@ -648,8 +648,8 @@ impl<T> ops::DerefMut for Bump<T> {
         // struct instead. This meta data is later copied to the meta data of `bump` when cast.
         let ptr = (self as *mut Self).cast::<MaybeUninit<u8>>();
         let mem: *mut [MaybeUninit<u8>] = ptr::slice_from_raw_parts_mut(ptr, data_layout.size());
-        // Now we have a pointer to MemBump with length meta data of the data slice.
-        let bump = unsafe { &mut *(mem as *mut MemBump) };
+        // Now we have a pointer to BumpSlice with length meta data of the data slice.
+        let bump = unsafe { &mut *(mem as *mut BumpSlice) };
         debug_assert_eq!(from_layout, Layout::for_value(bump));
         bump
     }
@@ -676,6 +676,6 @@ impl Header {
 #[test]
 fn mem_bump_derefs_correctly() {
     let bump = Bump::<usize>::zeroed();
-    let mem: &MemBump = &bump;
+    let mem: &BumpSlice = &bump;
     assert_eq!(mem::size_of_val(&bump), mem::size_of_val(mem));
 }

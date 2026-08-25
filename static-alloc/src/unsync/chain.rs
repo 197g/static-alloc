@@ -1,20 +1,17 @@
 //! This module defines a simple bump allocator.
 //! The allocator is not thread safe.
 use core::{
-    alloc::{Layout, LayoutErr},
+    alloc::{Layout, LayoutError},
     cell::Cell,
     mem::MaybeUninit,
     ptr::{self, NonNull},
 };
 
-use alloc::{
-    alloc::alloc_zeroed,
-    boxed::Box,
-};
+use alloc::{alloc::alloc_zeroed, boxed::Box};
 
 use crate::bump::Failure;
-use crate::unsync::bump::MemBump;
 use crate::leaked::LeakBox;
+use crate::unsync::bump::BumpSlice;
 
 /// An error representing an error while construction
 /// a [`Chain`].
@@ -39,7 +36,7 @@ struct Link {
     /// this field with just an &self reference.
     next: Cell<LinkPtr>,
     /// The bump allocator of this link.
-    bump: MemBump,
+    bump: BumpSlice,
 }
 
 /// A `Chain` is a simple bump allocator, that draws
@@ -62,9 +59,9 @@ impl Chain {
     }
 
     /// Attempts to allocate `elem` within the allocator.
-    pub fn bump_box<'bump, T: 'bump>(&'bump self)
-        -> Result<LeakBox<'bump, MaybeUninit<T>>, Failure>
-    {
+    pub fn bump_box<'bump, T: 'bump>(
+        &'bump self,
+    ) -> Result<LeakBox<'bump, MaybeUninit<T>>, Failure> {
         let root = self.root().ok_or(Failure::Exhausted)?;
         root.as_bump().bump_box()
     }
@@ -79,9 +76,7 @@ impl Chain {
         let self_bump = self.root.take();
 
         match new.root() {
-            None => {
-                self.root.set(self_bump)
-            }
+            None => self.root.set(self_bump),
             Some(root) => {
                 unsafe { root.set_next(self_bump) };
                 self.root.set(new.root.take())
@@ -118,7 +113,7 @@ impl Chain {
 }
 
 /// A type representing a failure while allocating
-/// a `MemBump`.
+/// a `BumpSlice`.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub(crate) struct RawAllocError {
     allocation_size: usize,
@@ -138,41 +133,38 @@ impl Link {
     /// It must point to a valid link. Furthermore, the old link is dropped!
     pub(crate) unsafe fn set_next(&self, next: LinkPtr) {
         if let Some(next) = self.next.replace(next) {
-            let _ = Box::from_raw(next.as_ptr());
+            // Safety: any value we stored into `next` is from `Box::leak`
+            let _ = unsafe { Box::from_raw(next.as_ptr()) };
         }
     }
 
     /// Take over the control over the tail.
     pub(crate) fn take_next(&self) -> Option<Box<Link>> {
         let ptr = self.next.take()?;
-        Some(unsafe {
-            Box::from_raw(ptr.as_ptr())
-        })
+        // Safety: any value we stored into `next` is from `Box::leak`
+        Some(unsafe { Box::from_raw(ptr.as_ptr()) })
     }
 
-    pub(crate) fn as_bump(&self) -> &MemBump {
+    pub(crate) fn as_bump(&self) -> &BumpSlice {
         &self.bump
     }
 
-    pub(crate) fn layout_from_size(size: usize) -> Result<Layout, LayoutErr> {
+    pub(crate) fn layout_from_size(size: usize) -> Result<Layout, LayoutError> {
         Layout::new::<Cell<LinkPtr>>()
-            .extend(MemBump::layout_from_size(size)?)
+            .extend(BumpSlice::layout_from_size(size)?)
             .map(|layout| layout.0)
     }
 
     unsafe fn alloc_raw(layout: Layout) -> Result<NonNull<u8>, RawAllocError> {
         let ptr = alloc_zeroed(layout);
-        NonNull::new(ptr).ok_or_else(|| {
-            RawAllocError::new(layout.size(), RawAllocFailure::Exhausted)
-        })
+        NonNull::new(ptr)
+            .ok_or_else(|| RawAllocError::new(layout.size(), RawAllocFailure::Exhausted))
     }
 
-    /// Allocates a MemBump and returns it.
+    /// Allocates a BumpSlice and returns it.
     pub(crate) fn alloc(capacity: usize) -> Result<NonNull<Self>, RawAllocError> {
         let layout = Self::layout_from_size(capacity)
-            .map_err(|_| {
-                RawAllocError::new(capacity, RawAllocFailure::Layout)
-            })?;
+            .map_err(|_| RawAllocError::new(capacity, RawAllocFailure::Layout))?;
 
         unsafe {
             let raw = Link::alloc_raw(layout)?;

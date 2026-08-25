@@ -1,12 +1,11 @@
 use core::mem::MaybeUninit;
 use static_alloc::leaked::LeakBox;
-use static_alloc::unsync::MemBump;
+use static_alloc::unsync::BumpSlice;
 
 #[test]
 fn raw_from_mem() {
     let mut memory = [MaybeUninit::new(0); 128];
-    let bump = MemBump::from_mem(&mut memory)
-        .expect("Enough memory for its metadata");
+    let bump = BumpSlice::from_mem(&mut memory).expect("Enough memory for its metadata");
 
     let n1 = bump.bump_box::<u64>().unwrap();
     let n2 = bump.bump_box::<u64>().unwrap();
@@ -29,11 +28,9 @@ fn raw_from_mem() {
 #[cfg(feature = "alloc")]
 fn allocate_with_fixed_capacity() {
     const CAPACITY: usize = 16;
-    let bump = MemBump::new(CAPACITY);
+    let bump = BumpSlice::new(CAPACITY);
     for i in 0..CAPACITY {
-        bump.get::<u8>().unwrap_or_else(|| {
-            panic!("works {}", i)
-        });
+        bump.get::<u8>().unwrap_or_else(|| panic!("works {}", i));
     }
     assert!(bump.get::<u8>().is_none());
 }

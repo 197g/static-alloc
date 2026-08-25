@@ -286,7 +286,7 @@ pub struct Level(pub(crate) usize);
 ///
 /// [`Level`]: struct.Level.html
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Allocation<'a, T = u8> {
+pub struct Allocation<'a, T: ?Sized = u8> {
     /// Pointer to the uninitialized region with specified layout.
     pub ptr: NonNull<T>,
 
@@ -568,6 +568,48 @@ impl<T> Bump<T> {
     /// [`get`]: #method.get
     pub fn get_at<V>(&self, level: Level) -> Result<Allocation<'_, V>, Failure> {
         self.as_view().get_at(level)
+    }
+
+    /// Get an allocation for a slice of a type.
+    ///
+    /// Returns `None` if the allocation fails (see [`Self::get`]) or if the slice layout can not be
+    /// computed due to an overflow with this size.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use static_alloc::bump::Bump;
+    ///
+    /// let slab: Bump<[usize; 6]> = Bump::uninit();
+    ///
+    /// let first = slab.get_slice::<usize>(4).unwrap();
+    /// let second = slab.get_slice::<usize>(2).unwrap();
+    /// assert!(slab.get_slice::<usize>(1).is_none());
+    ///
+    /// assert_eq!(first.ptr.len(), 4);
+    /// assert_eq!(second.ptr.len(), 2);
+    /// ```
+    ///
+    /// ```
+    /// # use static_alloc::bump::Bump;
+    ///
+    /// let slab: Bump<[usize; 1]> = Bump::uninit();
+    ///
+    /// let lots_of_empty = slab.get_slice::<()>(usize::MAX).unwrap();
+    /// assert_eq!(lots_of_empty.ptr.len(), usize::MAX);
+    /// ```
+    ///
+    /// ```
+    /// # use static_alloc::bump::Bump;
+    ///
+    /// let slab: Bump<[usize; 1]> = Bump::uninit();
+    ///
+    /// let _exhaust = slab.get_slice::<usize>(1).unwrap();
+    /// assert!(slab.get_slice::<usize>(1).is_none());
+    /// let empty_slice = slab.get_slice::<usize>(0).unwrap();
+    /// ```
+    pub fn get_slice<V>(&self, len: usize) -> Option<Allocation<'_, [V]>> {
+        self.as_view().get_slice(len)
     }
 
     /// Move a value into an owned allocation.
@@ -920,6 +962,51 @@ impl BumpSlice {
         self.as_view().get_at(level)
     }
 
+    /// Get an allocation for a slice of a type.
+    ///
+    /// Returns `None` if the allocation fails (see [`Self::get`]) or if the slice layout can not be
+    /// computed due to an overflow with this size.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use static_alloc::bump::{Bump, BumpSlice};
+    ///
+    /// let backing: Bump<[usize; 6]> = Bump::uninit();
+    /// let slab = backing.as_bump_slice().unwrap();
+    ///
+    /// let first = slab.get_slice::<usize>(4).unwrap();
+    /// let second = slab.get_slice::<usize>(2).unwrap();
+    /// assert!(slab.get_slice::<usize>(1).is_none());
+    ///
+    /// assert_eq!(first.ptr.len(), 4);
+    /// assert_eq!(second.ptr.len(), 2);
+    /// ```
+    ///
+    /// ```
+    /// # use static_alloc::bump::{Bump, BumpSlice};
+    ///
+    /// let backing: Bump<[usize; 1]> = Bump::uninit();
+    /// let slab = backing.as_bump_slice().unwrap();
+    ///
+    /// let lots_of_empty = slab.get_slice::<()>(usize::MAX).unwrap();
+    /// assert_eq!(lots_of_empty.ptr.len(), usize::MAX);
+    /// ```
+    ///
+    /// ```
+    /// # use static_alloc::bump::{Bump, BumpSlice};
+    ///
+    /// let backing: Bump<[usize; 1]> = Bump::uninit();
+    /// let slab = backing.as_bump_slice().unwrap();
+    ///
+    /// let _exhaust = slab.get_slice::<usize>(1).unwrap();
+    /// assert!(slab.get_slice::<usize>(1).is_none());
+    /// let empty_slice = slab.get_slice::<usize>(0).unwrap();
+    /// ```
+    pub fn get_slice<V>(&self, len: usize) -> Option<Allocation<'_, [V]>> {
+        self.as_view().get_slice(len)
+    }
+
     /// Move a value into an owned allocation.
     ///
     /// For safely initializing a value _after_ a successful allocation, see [`LeakBox::write`].
@@ -1211,6 +1298,27 @@ impl<'lt> BumpView<'lt> {
         })
     }
 
+    pub fn get_slice<V>(&self, len: usize) -> Option<Allocation<'lt, [V]>> {
+        if len == 0 {
+            return Some(Allocation::for_empty_slice(self.level()));
+        }
+
+        let (layout, _) = Layout::new::<V>().repeat(len).ok()?;
+
+        if layout.size() == 0 {
+            // Synthesize the slice for this ZST.
+            return Some(Allocation::for_zst_slice(len, self.level()));
+        };
+
+        let alloc = self.get_layout(layout)?;
+
+        Some(Allocation {
+            ptr: NonNull::slice_from_raw_parts(alloc.ptr.cast(), len),
+            lifetime: alloc.lifetime,
+            level: alloc.level,
+        })
+    }
+
     pub fn leak_box<V>(self, val: V) -> Option<LeakBox<'lt, V>> {
         let Allocation { ptr, lifetime, .. } = self.get::<V>()?;
         Some(unsafe { LeakBox::new_from_raw_non_null(ptr, val, lifetime) })
@@ -1232,7 +1340,7 @@ impl<'lt> BumpView<'lt> {
     /// - As a corollary, particular it must be in-bounds of the allocator's memory.
     /// - Another consequence, the result pointer must be aligned for the requested type.
     pub unsafe fn get_unchecked<V>(self, level: Level) -> Allocation<'lt, V> {
-        debug_assert!(level.0 <= mem::size_of_val(&self.storage));
+        debug_assert!(level.0 <= mem::size_of_val(self.storage));
 
         debug_assert!(
             level <= self.level(),
@@ -1257,6 +1365,7 @@ impl<'lt> BumpView<'lt> {
         }
     }
 
+    // FIXME: should take `NonZeroLayout`.
     fn try_alloc(self, layout: Layout) -> Option<Allocation<'lt>> {
         // Guess zero, this will fail when we try to access it and it isn't.
         let mut consumed = 0;
@@ -1277,6 +1386,7 @@ impl<'lt> BumpView<'lt> {
     ///
     /// # Panics
     /// This function panics if `expect_consumed` is larger than `length`.
+    /// FIXME: should take `NonZeroLayout`.
     fn try_alloc_at(
         self,
         layout: Layout,
@@ -1442,6 +1552,27 @@ impl<'alloc, T> Allocation<'alloc, T> {
             level,
         }
     }
+
+    pub(crate) fn for_zst_slice(len: usize, level: Level) -> Allocation<'alloc, [T]> {
+        assert!(mem::size_of::<T>() == 0);
+        let alloc: &[T; 0] = &[];
+
+        Allocation {
+            ptr: NonNull::slice_from_raw_parts(NonNull::from(alloc).cast(), len),
+            lifetime: AllocTime::default(),
+            level,
+        }
+    }
+
+    pub(crate) fn for_empty_slice(level: Level) -> Allocation<'alloc, [T]> {
+        let alloc: &[T; 0] = &[];
+
+        Allocation {
+            ptr: NonNull::from(alloc),
+            lifetime: AllocTime::default(),
+            level,
+        }
+    }
 }
 
 impl<T> LeakError<T> {
@@ -1468,6 +1599,24 @@ unsafe impl Sync for BumpView<'_> {}
 unsafe impl Send for BumpView<'_> {}
 
 unsafe impl<T> GlobalAlloc for Bump<T> {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // Safety: just handing over arguments exactly as is. These two allocators are 'compatible'
+        // in the sense they hold onto the same value handles.
+        unsafe { GlobalAlloc::alloc(&self.as_view(), layout) }
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, current: Layout, new_size: usize) -> *mut u8 {
+        // Safety: just handing over arguments exactly as is. These two allocators are 'compatible'
+        // in the sense they hold onto the same value handles.
+        unsafe { GlobalAlloc::realloc(&self.as_view(), ptr, current, new_size) }
+    }
+
+    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
+        // We are a slab allocator and do not deallocate.
+    }
+}
+
+unsafe impl GlobalAlloc for &'static BumpSlice {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         // Safety: just handing over arguments exactly as is. These two allocators are 'compatible'
         // in the sense they hold onto the same value handles.
