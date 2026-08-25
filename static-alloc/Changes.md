@@ -1,3 +1,28 @@
+# v0.3.
+
+Structural:
+- MSRV is now 1.85.
+- Atomics are now polyfilled with `portable-atomic`.
+
+Feature changes:
+- Renamed `MemBump` to `BumpSlice`.
+- Added `BumpSlice` for the `Sync` allocator.
+    - A static reference to this type implements `GlobalAlloc`.
+- The impl `Deref<Target=BumpSlice> for sync::Bump` will no verify, through a
+  post-monomorphization error, that the layouts are actually compatible. If the
+  alignment of the underlying storage type is larger than `usize` this will
+  produce a static compile error.
+- The implementation of `Bump` methods are now handled by an untyped proxy type
+  that's also shared with `BumpSlice`. This avoids monomorphization costs from
+  bloated codegen if multiple container types are used.
+- Added `Bump::get_slice` to produce an allocation for multiple elements.
+  Future versions may complement the set of methods when it's clear how
+  initialization is best handled.
+
+Fixes:
+- Fix an unsoundness related to `Deref` for `sync::Bump` (see above). If your
+  code compiles without change, your code could not have been affected.
+
 # v0.2.6
 
 - Fix an unsoundness bug in `MemBump::new` (available under feature `alloc`)
