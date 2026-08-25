@@ -1,6 +1,6 @@
 [package]
 name = "static-alloc"
-version = "0.3.0-prerelease"
+version = "0.3.0"
 description = "A bump allocator on static memory for the alloc-traits crate"
 edition = "2024"
 documentation = "https://docs.rs/static-alloc"
