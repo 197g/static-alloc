@@ -9,8 +9,8 @@ rust-version = "1.85"
 
 authors.workspace = true
 license.workspace = true
+readme = "Readme.md"
 repository.workspace = true
-readme.workspace = true
 
 [package.metadata.docs.rs]
 all-features = true
