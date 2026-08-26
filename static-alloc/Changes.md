@@ -1,4 +1,18 @@
-# v0.3.
+# v0.3.1
+
+Structural:
+- Fix unconditionally enabled MSRV 1.85 incompatible code.
+
+Feature changes:
+- Add `{Bump,BumpSlice}::capacity` for synchronized allocators.
+- Add `{Bump,BumpSlice}::data_ptr` for synchronized allocators.
+- Add `{Bump,unsync::Bump}::from_maybe_uninit` to initialize an allocator
+  in-place of an existing reserved space for it.
+- Add `{Bump,BumpSlice}::from_memory` to initialize an allocator in-place of a
+  potentially fitting memory location.
+
+
+# v0.3.0
 
 Structural:
 - MSRV is now 1.85.
