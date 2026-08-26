@@ -188,6 +188,13 @@ struct BumpView<'lt> {
     storage: &'lt UnsafeCell<[MaybeUninit<u8>]>,
 }
 
+/// NOTE: see the problem of freely dereferencing a `Bump<T>` into `BumpSlice` where the offset of
+/// `storage` must not be affected. This is caused by the align of `T` exceeding that of the header.
+/// If instead we included such information into the header we could fully support this
+/// dereferencing again, at the cost of a few bits. There is no need to actually read those bits
+/// when we're using it in a `Bump` as we only need to reconstruct the right `storage` slice when
+/// used as a `BumpSlice`. The extra struct padding will only appear as more MaybeUninit data in the
+/// unsized type.
 #[repr(C)]
 struct Header {
     consumed: AtomicUsize,
@@ -285,6 +292,14 @@ pub struct Level(pub(crate) usize);
 /// A successful allocation and current [`Level`].
 ///
 /// [`Level`]: struct.Level.html
+///
+/// ## Design notes
+///
+/// The `ptr` field is, when returned by an allocator, always a valid pointer. However, we can not
+/// express this as a mutable reference to `MaybeUninit` for unsized types. Instead, a pointer is
+/// needed to provide address, provenance, and pointer metadata. The cost of this is that we discard
+/// the validity information which has to be unsafely re-applied by the user (of course, verifying
+/// that the point actually is valid since this type is fully public).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Allocation<'a, T: ?Sized = u8> {
     /// Pointer to the uninitialized region with specified layout.
@@ -431,6 +446,79 @@ impl<T> Bump<T> {
         //   cover the alignment requirement. The `Self` type has the same alignment and same offset
         //   past-the-field and hence will receive the same padding.
         Some(unsafe { &mut *(mem as *mut BumpSlice) })
+    }
+
+    /// Construct a bump allocator into an uninitialized memory location.
+    ///
+    /// This fills in only a constant sized header. The rest of the allocation is left-as, i.e. if
+    /// remains initialized exactly in those spots the caller may have initialized with external
+    /// means.
+    ///
+    /// Note that this method is `const` (though this is not particularly useful yet as of `0.3.0`).
+    ///
+    /// # Usage
+    ///
+    /// This method allows `Bump` to be used together with interfaces that require an outer
+    /// `MaybeUninit` for their safety proofs, e.g. [`Box::new_uninit_slice`].
+    ///
+    /// ```
+    /// # use static_alloc::bump::Bump;
+    /// type Allocator = Bump<[u32; 128]>;
+    ///
+    /// # let num_components = 4;
+    /// // 4 independent allocators, e.g. for four components of your software.
+    /// // Still guaranteed to live in consecutive memory.
+    /// let mut allocators = Box::<[Allocator]>::new_uninit_slice(num_components);
+    ///
+    /// // The index here might be a runtime address.
+    /// // Now this arena can be used without initializing the others already.
+    /// let c0 = Bump::from_maybe_uninit(&mut allocators[0]);
+    /// // Etc. Use this temporary stack allocator.
+    /// let _ = c0.leak_box(0xdead_beefusize);
+    /// ```
+    pub const fn from_maybe_uninit(data: &mut MaybeUninit<Self>) -> &'_ mut Self {
+        // Safety: dereferencing a pointer into a `&mut MaybeUninit`.
+        let header = unsafe { &raw mut (*data.as_mut_ptr()).header };
+        // Safety: pointer points into a `MaybeUninit` which we have derived a mutable provenance
+        // pointer into.
+        unsafe { core::ptr::write(header, Header::empty()) };
+        // Safety: only the header field requires initialization. The storage is a no-op.
+        unsafe { data.assume_init_mut() }
+    }
+
+    /// Construct a bump allocator into an existing dynamically sized arena of memory.
+    ///
+    /// Note that this method also exists for a dynamically sized
+    /// [`BumpSlice`][`BumpSlice::from_memory`] which can make use of almost arbitrarily sized
+    /// blocks of data. In comparison, this method requires that at least `size_of::<Self>` data at
+    /// an aligned location in the slice is available.
+    ///
+    /// Returns `None` if there are not enough bytes beyond the first aligned offset to hold a value
+    /// of `Self` type.
+    ///
+    /// # Usage
+    ///
+    /// This way you may re-use storage from some arbitrary existing span of memory, provided it has
+    /// at least enough room to hold an aligned header.
+    ///
+    /// ```
+    /// use core::mem::MaybeUninit;
+    /// use static_alloc::bump::Bump;
+    /// # fn example() -> Option<()> {
+    ///
+    /// let mut buffer = MaybeUninit::<[u8; 256]>::uninit();
+    /// let bump = Bump::<[u8; 200]>::from_memory(buffer.as_mut())?;
+    ///
+    /// // Slightly less than 256 free bytes of memory to use.
+    /// // Exact number is unstable and depends on the align of `buffer`.
+    /// let allocated_slice = bump.get_slice::<u32>(50)?;
+    ///
+    /// # Some(()) }
+    /// ```
+    pub fn from_memory(data: &mut [MaybeUninit<u8>]) -> Option<&'_ mut Self> {
+        // Safety: `MaybeUninit<Self>` is always valid.
+        let (_, usable, _) = unsafe { data.align_to_mut::<MaybeUninit<Self>>() };
+        usable.first_mut().map(Self::from_maybe_uninit)
     }
 
     /// Reset the bump allocator.
@@ -827,6 +915,55 @@ impl<T> Bump<T> {
 }
 
 impl BumpSlice {
+    /// Construct a bump allocator into an existing dynamically sized arena of memory.
+    ///
+    /// # Usage
+    ///
+    /// This way you may re-use storage from some arbitrary existing span of memory, provided it has
+    /// at least enough room to hold an aligned header.
+    ///
+    /// ```
+    /// use core::mem::MaybeUninit;
+    /// use static_alloc::bump::BumpSlice;
+    /// # fn example() -> Option<()> {
+    ///
+    /// let mut buffer = MaybeUninit::<[u8; 256]>::uninit();
+    /// let bump = BumpSlice::from_memory(buffer.as_mut())?;
+    ///
+    /// // Slightly less than 256 free bytes of memory to use.
+    /// // Exact number is unstable and depends on the align of `buffer`.
+    /// let allocated_slice = bump.get_slice::<u32>(50)?;
+    ///
+    /// # Some(()) }
+    /// ```
+    pub fn from_memory(data: &mut [MaybeUninit<u8>]) -> Option<&'_ mut Self> {
+        // First we must write a `Header` structure, the available storage then follows it. To do
+        // this we create a temporary bump allocator with an external header.
+        let start_addr = {
+            let tmp_header = Header::empty();
+            let data = UnsafeCell::from_mut(data);
+
+            let alloc = BumpView {
+                header: &tmp_header,
+                storage: &*data,
+            };
+
+            // Initialize a header at some valid location in this data.
+            let mut initialized_header = alloc.leak_box::<Header>(Header::empty())?;
+            <*mut Header>::addr(&mut *initialized_header)
+        };
+
+        // Time to drop the temporary allocator.
+        let offset = start_addr - <*mut [_]>::addr(data);
+        // This has the right address and provenance, but wrong len metadata for a `BumpSlice`.
+        let bump_slice = &mut data[offset..];
+
+        let len = bump_slice.len() - core::mem::size_of::<Header>();
+        let data = core::ptr::slice_from_raw_parts_mut(bump_slice.as_mut_ptr(), len);
+
+        Some(unsafe { &mut *(data as *mut BumpSlice) })
+    }
+
     /// Reset the bump allocator.
     ///
     /// Requires a mutable reference, as no allocations can be active when doing it. This behaves

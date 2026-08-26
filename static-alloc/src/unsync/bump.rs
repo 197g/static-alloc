@@ -89,7 +89,7 @@ use crate::leaked::LeakBox;
 #[repr(C)]
 pub struct Bump<T> {
     /// The index used in allocation.
-    _index: Cell<usize>,
+    header: Header,
     /// The backing storage for raw allocated data.
     _data: UnsafeCell<MaybeUninit<T>>,
     // Warning: when changing the data layout, you must change `BumpSlice` as well.
@@ -123,7 +123,7 @@ impl<T> Bump<T> {
     /// All allocations coming from the allocator will need to be initialized manually.
     pub fn uninit() -> Self {
         Bump {
-            _index: Cell::new(0),
+            header: Header::empty(),
             _data: UnsafeCell::new(MaybeUninit::uninit()),
         }
     }
@@ -133,9 +133,47 @@ impl<T> Bump<T> {
     /// The caller can rely on all allocations to be zeroed.
     pub fn zeroed() -> Self {
         Bump {
-            _index: Cell::new(0),
+            header: Header::empty(),
             _data: UnsafeCell::new(MaybeUninit::zeroed()),
         }
+    }
+
+    /// Construct a bump allocator into an uninitialized memory location.
+    ///
+    /// This fills in only a constant sized header. The rest of the allocation is left-as, i.e. if
+    /// remains initialized exactly in those spots the caller may have initialized with external
+    /// means.
+    ///
+    /// Note that this method is `const` (though this is not particularly useful yet as of `0.3.0`).
+    ///
+    /// # Usage
+    ///
+    /// This method allows `Bump` to be used together with interfaces that require an outer
+    /// `MaybeUninit` for their safety proofs, e.g. [`Box::new_uninit_slice`].
+    ///
+    /// ```
+    /// # use static_alloc::unsync::Bump;
+    /// type Allocator = Bump<[u32; 128]>;
+    ///
+    /// # let num_components = 4;
+    /// // 4 independent allocators, e.g. for four components of your software.
+    /// // Still guaranteed to live in consecutive memory.
+    /// let mut allocators = Box::<[Allocator]>::new_uninit_slice(num_components);
+    ///
+    /// // The index here might be a runtime address.
+    /// // Now this arena can be used without initializing the others already.
+    /// let c0 = Bump::from_maybe_uninit(&mut allocators[0]);
+    /// // Etc. Use this temporary stack allocator.
+    /// let _ = c0.bump_box::<usize>();
+    /// ```
+    pub const fn from_maybe_uninit(data: &mut MaybeUninit<Self>) -> &'_ mut Self {
+        // Safety: dereferencing a pointer into a `&mut MaybeUninit`.
+        let header = unsafe { &raw mut (*data.as_mut_ptr()).header };
+        // Safety: pointer points into a `MaybeUninit` which we have derived a mutable provenance
+        // pointer into.
+        unsafe { core::ptr::write(header, Header::empty()) };
+        // Safety: only the header field requires initialization. The storage is a no-op.
+        unsafe { data.assume_init_mut() }
     }
 }
 
