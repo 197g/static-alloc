@@ -577,6 +577,25 @@ impl<T> Bump<T> {
         }
     }
 
+    /// Returns capacity of this allocator.
+    ///
+    /// This is how many *bytes* can be allocated within this allocator in total, with no
+    /// information about the currently consumed count.
+    pub const fn capacity(&self) -> usize {
+        mem::size_of::<T>()
+    }
+
+    /// Get a raw pointer to the data.
+    ///
+    /// Note that *any* use of the pointer must be done with extreme care as it may invalidate
+    /// existing references into the allocated region. Furthermore, bytes may not be initialized.
+    /// The length of the valid region is [`BumpSlice::capacity`].
+    ///
+    /// Prefer [`Self::get_unchecked`] for reconstructing a prior allocation.
+    pub fn data_ptr(&self) -> NonNull<u8> {
+        NonNull::from(&self.storage).cast()
+    }
+
     /// Allocate a region of memory.
     ///
     /// This is a safe alternative to [GlobalAlloc::alloc](#impl-GlobalAlloc).
@@ -1014,6 +1033,25 @@ impl BumpSlice {
             header: &self.header,
             storage: &self.storage,
         }
+    }
+
+    /// Returns capacity of this allocator.
+    ///
+    /// This is how many *bytes* can be allocated within this allocator in total, with no
+    /// information about the currently consumed count.
+    pub const fn capacity(&self) -> usize {
+        self.storage.get().len()
+    }
+
+    /// Get a raw pointer to the data.
+    ///
+    /// Note that *any* use of the pointer must be done with extreme care as it may invalidate
+    /// existing references into the allocated region. Furthermore, bytes may not be initialized.
+    /// The length of the valid region is [`BumpSlice::capacity`].
+    ///
+    /// Prefer [`Self::get_unchecked`] for reconstructing a prior allocation.
+    pub fn data_ptr(&self) -> NonNull<u8> {
+        NonNull::from(&self.storage).cast()
     }
 
     /// Allocate a region of memory.
