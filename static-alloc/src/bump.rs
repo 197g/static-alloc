@@ -1478,7 +1478,7 @@ impl<'lt> BumpView<'lt> {
             return Some(Allocation::for_empty_slice(self.level()));
         }
 
-        let (layout, _) = Layout::new::<V>().repeat(len).ok()?;
+        let layout = Layout::array::<V>(len).ok()?;
 
         if layout.size() == 0 {
             // Synthesize the slice for this ZST.
