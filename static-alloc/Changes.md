@@ -1,3 +1,13 @@
+# v0.3.2
+
+Structural:
+- Added optional dependency `allocator-api2@0.4.0`
+
+Feature changes:
+- `Bump`, `BumpSlice` and `unsync::Bump{,Slice}` now implement the trait
+  `alloc::Allocator` from `allocator-api2` when the feature dependency is
+  activated.
+
 # v0.3.1
 
 Structural:
