@@ -47,6 +47,9 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
+#[cfg(feature = "allocator-api2")]
+mod allocator_api2;
+
 pub mod bump;
 pub use bump::Bump;
 pub mod leaked;

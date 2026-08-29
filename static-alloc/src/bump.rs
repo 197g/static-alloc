@@ -183,7 +183,7 @@ pub struct BumpSlice {
 ///
 /// Note: You might think that we can
 #[derive(Clone, Copy)]
-struct BumpView<'lt> {
+pub(crate) struct BumpView<'lt> {
     header: &'lt Header,
     storage: &'lt UnsafeCell<[MaybeUninit<u8>]>,
 }
@@ -564,7 +564,7 @@ impl<T> Bump<T> {
         self.header = Header::empty();
     }
 
-    fn as_view(&self) -> BumpView<'_> {
+    pub(crate) fn as_view(&self) -> BumpView<'_> {
         BumpView {
             header: &self.header,
             storage: {
@@ -1028,7 +1028,7 @@ impl BumpSlice {
         self.header = Header::empty();
     }
 
-    fn as_view(&self) -> BumpView<'_> {
+    pub(crate) fn as_view(&self) -> BumpView<'_> {
         BumpView {
             header: &self.header,
             storage: &self.storage,
