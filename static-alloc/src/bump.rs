@@ -289,6 +289,13 @@ pub struct LeakError<T> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Level(pub(crate) usize);
 
+impl Level {
+    /// Get the byte offset with respect to the arena [`data_ptr`](`Bump::data_ptr`).
+    pub fn byte_offset(&self) -> usize {
+        self.0
+    }
+}
+
 /// A successful allocation and current [`Level`].
 ///
 /// [`Level`]: struct.Level.html
@@ -309,6 +316,9 @@ pub struct Allocation<'a, T: ?Sized = u8> {
     pub lifetime: AllocTime<'a>,
 
     /// The observed amount of consumed bytes after the allocation.
+    ///
+    /// For `Bump` this is precise, i.e. the offset of the `ptr` in the arena data is the level's
+    /// byte offset minus the layout size.
     pub level: Level,
 }
 
@@ -1402,7 +1412,7 @@ impl BumpSlice {
 
 impl<'lt> BumpView<'lt> {
     pub fn alloc(self, layout: Layout) -> Option<NonNull<u8>> {
-        Some(self.try_alloc(layout)?.ptr)
+        Some(self.try_alloc(layout).ok()?.ptr)
     }
 
     pub fn alloc_at(self, layout: Layout, level: Level) -> Result<Allocation<'lt>, Failure> {
@@ -1420,7 +1430,7 @@ impl<'lt> BumpView<'lt> {
     }
 
     pub fn get_layout(self, layout: Layout) -> Option<Allocation<'lt>> {
-        self.try_alloc(layout)
+        self.try_alloc(layout).ok()
     }
 
     pub fn get_layout_at(self, layout: Layout, at: Level) -> Result<Allocation<'lt>, Failure> {
@@ -1437,7 +1447,7 @@ impl<'lt> BumpView<'lt> {
             ptr,
             lifetime,
             level,
-        } = self.try_alloc(layout)?;
+        } = self.try_alloc(layout).ok()?;
 
         Some(Allocation {
             ptr: ptr.cast(),
@@ -1541,13 +1551,23 @@ impl<'lt> BumpView<'lt> {
     }
 
     // FIXME: should take `NonZeroLayout`.
-    fn try_alloc(self, layout: Layout) -> Option<Allocation<'lt>> {
-        // Guess zero, this will fail when we try to access it and it isn't.
-        let mut consumed = 0;
+    pub(crate) fn try_alloc(self, layout: Layout) -> Result<Allocation<'lt>, Level> {
+        // Guess the current level, this will fail when we try to access it and it isn't.
+        let mut consumed = self.level().0;
+        // FIXME: parts of the initial computation depends mostly on `layout` and `storage`, i.e.
+        // not on the current level. It's not verified if LLVM moves these out of the loop and it's
+        // doubtful since there's a CAS within it (`self.bump`). Rewrite to avoid this, e.g. a
+        // 'qualified layout` type filled with specifics to our storage? Especially since we align
+        // upwards which isn't a simple AND. However, calculating the last possible end-location and
+        // then the last possible start, and then a simpler comparison would be.
+        //
+        // Speaking of this might motivate changing to storing the number of bytes left instead of
+        // the number of bytes consumed. Then we have again an AND boundary with an addition for the
+        // CAS update.
         loop {
             match self.try_alloc_at(layout, consumed) {
-                Ok(alloc) => return Some(alloc),
-                Err(Failure::Exhausted) => return None,
+                Ok(alloc) => return Ok(alloc),
+                Err(Failure::Exhausted) => return Err(Level(consumed)),
                 Err(Failure::Mismatch { observed }) => consumed = observed.0,
             }
         }
