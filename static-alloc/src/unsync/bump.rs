@@ -108,11 +108,11 @@ pub struct BumpSlice {
 
     /// The data slice of a node. This slice
     /// may be of any arbitrary size. We use
-    /// a Cell<MaybeUninit> to allow modification
+    /// a `Cell<MaybeUninit>` to allow modification
     /// trough a &self reference, and to allow
     /// writing uninit padding bytes.
     /// Note that the underlying memory is in one
-    /// contiguous `UnsafeCell`, it's only represented
+    /// contiguous [`UnsafeCell`], it's only represented
     /// here to make it easier to slice.
     data: UnsafeCell<[MaybeUninit<u8>]>,
 }

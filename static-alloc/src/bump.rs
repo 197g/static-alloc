@@ -226,7 +226,7 @@ pub struct LeakError<T> {
 /// the choice to the user. This is not yet encapsulate in a safe API yet `Level` makes it easy to
 /// reason about.
 ///
-/// See [`MemBump::get_unchecked`][crate::unsync::MemBump] for redeeming a value.
+/// See [`MemBump::get_unchecked`](`crate::bump::BumpSlice`) for redeeming a value.
 ///
 /// ## Unsound usage.
 ///
@@ -320,6 +320,40 @@ pub struct Allocation<'a, T: ?Sized = u8> {
     /// For `Bump` this is precise, i.e. the offset of the `ptr` in the arena data is the level's
     /// byte offset minus the layout size.
     pub level: Level,
+}
+
+impl<T> Allocation<'_, T> {
+    /// Get the `Level` at which the allocation starts.
+    ///
+    /// This can be used as the level of [`Bump::get_unchecked`] with the arena it as allocated
+    /// from. There is an equivalent method for some unsized types.
+    ///
+    /// # Usage
+    ///
+    /// ```
+    /// use static_alloc::Bump;
+    ///
+    /// let arena = Bump::<[u32; 4]>::uninit();
+    /// let alloc = arena.get::<u32>().unwrap();
+    ///
+    /// assert_eq!(alloc.level.byte_offset(), 4);
+    /// assert_eq!(alloc.level_start().byte_offset(), 0);
+    /// ```
+    pub fn level_start(&self) -> Level {
+        Level(self.level.byte_offset() - mem::size_of::<T>())
+    }
+}
+
+impl<T> Allocation<'_, [T]> {
+    /// Get the `Level` at which the allocation starts.
+    ///
+    /// This can be used as the level of [`Bump::get_unchecked`] with the arena it as allocated
+    /// from. There is an equivalent method for some unsized types.
+    ///
+    /// See the sized [`Allocation::level_start`].
+    pub fn level_start(&self) -> Level {
+        Level(self.level.byte_offset() - mem::size_of::<T>() * self.ptr.len())
+    }
 }
 
 /// Reason for a failed allocation at an exact [`Level`].
@@ -680,9 +714,7 @@ impl<T> Bump<T> {
 
     /// Get an allocation for a specific type at a specific level.
     ///
-    /// See [`get`] for usage.
-    ///
-    /// [`get`]: #method.get
+    /// See [`get`](`Self::get`) for usage.
     pub fn get_at<V>(&self, level: Level) -> Result<Allocation<'_, V>, Failure> {
         self.as_view().get_at(level)
     }
@@ -816,7 +848,7 @@ impl<T> Bump<T> {
     /// # Safety
     ///
     /// - The level must refer to an existing allocation, i.e. it must previously have been
-    ///   returned in [`Allocation::level`].
+    ///   returned in [`Allocation::level_start`].
     /// - As a corollary, particular it must be in-bounds of the allocator's memory.
     /// - Another consequence, the result pointer must be aligned for the requested type.
     pub unsafe fn get_unchecked<V>(&self, level: Level) -> Allocation<'_, V> {
@@ -841,7 +873,7 @@ impl<T> Bump<T> {
     /// It is important to understand that it is undefined behaviour to reuse the allocation for
     /// the *whole lifetime* of the returned reference. That is, dropping the allocation in-place
     /// while the reference is still within its lifetime comes with the exact same unsafety caveats
-    /// as [`ManuallyDrop::drop`].
+    /// as [`ManuallyDrop::drop`](`core::mem::ManuallyDrop::drop`).
     ///
     /// ```
     /// # use static_alloc::Bump;
@@ -880,7 +912,6 @@ impl<T> Bump<T> {
     /// the allocated region.
     ///
     /// [`ptr::slice_from_raw_parts`]: https://github.com/rust-lang/rust/issues/36925
-    /// [`ManuallyDrop::drop`]: https://doc.rust-lang.org/beta/std/mem/struct.ManuallyDrop.html#method.drop
     ///
     /// TODO: will be deprecated sooner or later in favor of a method that does not move the
     /// resource on failure.
