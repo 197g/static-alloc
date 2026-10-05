@@ -175,6 +175,9 @@ unsafe fn shrink_in_place(
 /// thread-local arena in those cases (please open an issue if you have a use case). A handle
 /// wrapper on the other hand would provide surgical amounts of control.
 pub struct AllocatorStats<'lt, A: ?Sized> {
+    /// The placement of the last allocation, as byte offset in the arena.
+    allocation: cell::Cell<Level>,
+    /// The observed usage of the allocator.
     observed_level: cell::Cell<Level>,
     /// We could have a type-erased other type where this is a direct `BumpView` instead. Making
     /// this work would require complicated generics though.
@@ -189,6 +192,7 @@ impl<'lt, A: ?Sized> AllocatorStats<'lt, A> {
     /// slices.
     pub fn new(arena: &'lt A) -> Self {
         AllocatorStats {
+            allocation: cell::Cell::new(Level(0)),
             observed_level: cell::Cell::new(Level(0)),
             inner: arena,
         }
@@ -243,6 +247,31 @@ impl<'lt, A: ?Sized> AllocatorStats<'lt, A> {
     pub fn last_observed_level(&self) -> Level {
         self.observed_level.get()
     }
+
+    /// Get the [`Level`] at which the last successful allocation sits.
+    ///
+    /// This is provided for all allocations, sized and unsized.
+    ///
+    /// # Usage
+    ///
+    /// ```
+    /// use static_alloc::allocator_api2::AllocatorStats;
+    /// use static_alloc::bump::Bump;
+    /// use allocator_api2::vec::Vec;
+    ///
+    /// let arena =  Bump::<[usize; 4]>::uninit();
+    /// let hdl = AllocatorStats::new(&arena);
+    ///
+    /// let mut vec = Vec::<u32, _>::with_capacity_in(1, hdl);
+    /// assert_eq!(vec.allocator().last_allocation_start().byte_offset(), 0);
+    ///
+    /// // This will reallocate the vector, after the previous one.
+    /// vec.try_reserve_exact(2);
+    /// assert_eq!(vec.allocator().last_allocation_start().byte_offset(), 4);
+    /// ```
+    pub fn last_allocation_start(&self) -> Level {
+        self.allocation.get()
+    }
 }
 
 unsafe impl<T> Allocator for AllocatorStats<'_, Bump<T>> {
@@ -250,6 +279,7 @@ unsafe impl<T> Allocator for AllocatorStats<'_, Bump<T>> {
         let len = layout.size();
         match self.inner.as_view().try_alloc(layout) {
             Ok(allocation) => {
+                self.allocation.set(Level(allocation.level.0 - len));
                 self.observed_level.set(allocation.level);
                 Ok(NonNull::slice_from_raw_parts(allocation.ptr, len))
             }
