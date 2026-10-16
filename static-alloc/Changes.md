@@ -3,12 +3,20 @@
 Expect this to be the last version before requiring rust-version 1.100 (the
 expected feature stabilization for the allocator trait).
 
+Soundness:
+- Corrected the safety comment on `Bump::get_unchecked`, advising the use of
+  the correct `Level`. It previously referred to the past-the-end value of an
+  allocation instead of its proper expected start.
+
 Feature changes:
 - Added `allocator_api2::WithAllocationInfo`, a by-reference adapter equivalent
   to its inner allocator that retains information about the base address and
   remaining arena space when allocations are performed via its `Allocator`
   impls. This enables access to this type-specific data even when used as a
   generic trait instance which happens especially with standard containers.
+- Add `Allocation::level_start` to conveniently calculate the appropriate
+  argument to the `Bump::get_unchecked` method.
+- Add `Level::byte_offset` to retrieve the underlying integer representation.
 
 # v0.3.2
 
