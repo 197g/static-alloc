@@ -1,10 +1,10 @@
 use crate::{
-    bump::{Bump, BumpSlice, BumpView},
+    bump::{Bump, BumpSlice, BumpView, Level},
     unsync,
 };
 
 use allocator_api2::alloc::{AllocError, Allocator, Layout};
-use core::ptr::NonNull;
+use core::{cell, ptr::NonNull};
 
 unsafe impl<T> Allocator for Bump<T> {
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
@@ -144,4 +144,222 @@ unsafe fn shrink_in_place(
     };
 
     Ok(NonNull::slice_from_raw_parts(ptr, len))
+}
+
+/// Wrapper around an allocator, that gathers stats about the underlying store while allocating.
+///
+/// The `allocator_api2` design intentionally avoids generics in its result types. Allocations in
+/// the bump arena however provide some auxiliary information such as the usage level of the bump
+/// before and after an allocation (at least a snapshot of it for a Sync allocator). This
+/// information can be especially useful in case of an allocation failure but gather it separately
+/// would be racy. Allocating with this wrapper avoids the race.
+///
+/// For these use cases you can replace the allocator handle with this wrapper. The wrapper is
+/// [equivalent] to the underlying allocator.
+///
+/// [equivalent]: https://doc.rust-lang.org/stable/std/alloc/trait.Allocator.html#equivalent-allocators
+///
+/// # Usage
+///
+/// ```
+/// use static_alloc::allocator_api2::AllocatorStats;
+/// use static_alloc::bump::Bump;
+/// ```
+///
+/// # Design
+///
+/// Interestingly, we could also provide per-call allocator configuration. For a `Bump` shared
+/// between threads for instance there is an inner loop around a fallible CAS. A parameter could
+/// constrain this loop to exit early on a case-by-case basis. It does not make too much sense to
+/// enforce it for all allocations in the arena. You would often prefer to use a non-racy
+/// thread-local arena in those cases (please open an issue if you have a use case). A handle
+/// wrapper on the other hand would provide surgical amounts of control.
+pub struct AllocatorStats<'lt, A: ?Sized> {
+    /// The placement of the last allocation, as byte offset in the arena.
+    allocation: cell::Cell<Level>,
+    /// The observed usage of the allocator.
+    observed_level: cell::Cell<Level>,
+    /// We could have a type-erased other type where this is a direct `BumpView` instead. Making
+    /// this work would require complicated generics though.
+    inner: &'lt A,
+}
+
+impl<'lt, A: ?Sized> AllocatorStats<'lt, A> {
+    /// Wrap an arena to gather stats.
+    ///
+    /// This does not constrain the type `A`. However, it can only be sensibly used with a
+    /// [`Bump`](`crate::bump::Bump`) or [`BumpSlice`](`crate::bump::BumpSlice`) or the unsync
+    /// [`BumpSlice`](`crate::unsync::BumpSlice`). It does *not* work with unsync's `Bump` due to
+    /// current design differences. (It is implemented with Deref into a `BumpSlice` instead of a
+    /// view used for both. This will post-monomorphization error which we do not want to hide).
+    pub fn new(arena: &'lt A) -> Self {
+        AllocatorStats {
+            allocation: cell::Cell::new(Level(0)),
+            observed_level: cell::Cell::new(Level(0)),
+            inner: arena,
+        }
+    }
+
+    /// Query the consumed level observed by the last allocation call.
+    ///
+    /// The value is updated both on success and failure.
+    ///
+    /// # Usage
+    ///
+    /// You will get information about the consumed bytes with each attempted allocation.
+    ///
+    /// ```
+    /// use static_alloc::allocator_api2::AllocatorStats;
+    /// use static_alloc::bump::Bump;
+    /// use allocator_api2::vec::Vec;
+    ///
+    /// let arena =  Bump::<[usize; 4]>::uninit();
+    /// let hdl = AllocatorStats::new(&arena);
+    ///
+    /// let mut vec = Vec::<u32, _>::with_capacity_in(1, hdl);
+    /// assert_eq!(vec.allocator().last_observed_level().byte_offset(), 4);
+    ///
+    /// // This will not fit, and fail to allocate.
+    /// vec.try_reserve(32);
+    /// assert_eq!(vec.allocator().last_observed_level().byte_offset(), 4);
+    ///
+    /// // This will, reallocating the vector.
+    /// vec.try_reserve_exact(2);
+    /// assert_eq!(vec.allocator().last_observed_level().byte_offset(), 12);
+    /// ```
+    ///
+    /// The information is updated also when the arena is used concurrently for another purpose,
+    /// too.
+    ///
+    /// ```
+    /// use static_alloc::allocator_api2::AllocatorStats;
+    /// use static_alloc::bump::Bump;
+    /// use allocator_api2::vec::Vec;
+    ///
+    /// let arena =  Bump::<[usize; 4]>::uninit();
+    /// let hdl = AllocatorStats::new(&arena);
+    ///
+    /// let mut vec = Vec::<u32, _>::new_in(hdl);
+    /// let _ = arena.leak(0u32);
+    ///
+    /// // Afterwards exactly three `u32` allocator, the one leaked and the 2 reserved.
+    /// vec.try_reserve_exact(2);
+    /// assert_eq!(vec.allocator().last_observed_level().byte_offset(), 12);
+    /// ```
+    pub fn last_observed_level(&self) -> Level {
+        self.observed_level.get()
+    }
+
+    /// Get the [`Level`] at which the last successful allocation sits.
+    ///
+    /// This is provided for all allocations, sized and unsized.
+    ///
+    /// # Usage
+    ///
+    /// ```
+    /// use static_alloc::allocator_api2::AllocatorStats;
+    /// use static_alloc::bump::Bump;
+    /// use allocator_api2::vec::Vec;
+    ///
+    /// let arena =  Bump::<[usize; 4]>::uninit();
+    /// let hdl = AllocatorStats::new(&arena);
+    ///
+    /// let mut vec = Vec::<u32, _>::with_capacity_in(1, hdl);
+    /// assert_eq!(vec.allocator().last_allocation_start().byte_offset(), 0);
+    ///
+    /// // This will reallocate the vector, after the previous one.
+    /// vec.try_reserve_exact(2);
+    /// assert_eq!(vec.allocator().last_allocation_start().byte_offset(), 4);
+    /// ```
+    pub fn last_allocation_start(&self) -> Level {
+        self.allocation.get()
+    }
+}
+
+unsafe impl<T> Allocator for AllocatorStats<'_, Bump<T>> {
+    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        let len = layout.size();
+        match self.inner.as_view().try_alloc(layout) {
+            Ok(allocation) => {
+                self.allocation.set(Level(allocation.level.0 - len));
+                self.observed_level.set(allocation.level);
+                Ok(NonNull::slice_from_raw_parts(allocation.ptr, len))
+            }
+            Err(level) => {
+                self.observed_level.set(level);
+                Err(AllocError)
+            }
+        }
+    }
+
+    unsafe fn deallocate(&self, _: NonNull<u8>, _: Layout) {}
+
+    unsafe fn shrink(
+        &self,
+        ptr: NonNull<u8>,
+        old_layout: Layout,
+        new_layout: Layout,
+    ) -> Result<NonNull<[u8]>, AllocError> {
+        // Safety: forwarding arguments, i.e  requirements, to an equivalent allocator.
+        unsafe { Allocator::shrink(&self.inner, ptr, old_layout, new_layout) }
+    }
+}
+
+unsafe impl Allocator for AllocatorStats<'_, BumpSlice> {
+    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        let len = layout.size();
+        match self.inner.as_view().try_alloc(layout) {
+            Ok(allocation) => {
+                self.allocation.set(Level(allocation.level.0 - len));
+                self.observed_level.set(allocation.level);
+                Ok(NonNull::slice_from_raw_parts(allocation.ptr, len))
+            }
+            Err(level) => {
+                self.observed_level.set(level);
+                Err(AllocError)
+            }
+        }
+    }
+
+    unsafe fn deallocate(&self, _: NonNull<u8>, _: Layout) {}
+
+    unsafe fn shrink(
+        &self,
+        ptr: NonNull<u8>,
+        old_layout: Layout,
+        new_layout: Layout,
+    ) -> Result<NonNull<[u8]>, AllocError> {
+        // Safety: forwarding arguments, i.e  requirements, to an equivalent allocator.
+        unsafe { Allocator::shrink(&self.inner, ptr, old_layout, new_layout) }
+    }
+}
+
+// Not implemented for `unsync::Bump<T>` due to having to deref internally then.
+unsafe impl Allocator for AllocatorStats<'_, unsync::BumpSlice> {
+    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        let len = layout.size();
+        match self.inner.try_alloc(layout) {
+            Ok(allocation) => {
+                self.allocation.set(Level(allocation.level.0 - len));
+                self.observed_level.set(allocation.level);
+                Ok(NonNull::slice_from_raw_parts(allocation.ptr, len))
+            }
+            Err(level) => {
+                self.observed_level.set(level);
+                Err(AllocError)
+            }
+        }
+    }
+
+    unsafe fn deallocate(&self, _: NonNull<u8>, _: Layout) {}
+
+    unsafe fn shrink(
+        &self,
+        ptr: NonNull<u8>,
+        old_layout: Layout,
+        new_layout: Layout,
+    ) -> Result<NonNull<[u8]>, AllocError> {
+        // Safety: forwarding arguments, i.e  requirements, to an equivalent allocator.
+        unsafe { Allocator::shrink(&self.inner, ptr, old_layout, new_layout) }
+    }
 }

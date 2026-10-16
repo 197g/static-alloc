@@ -226,7 +226,7 @@ pub struct LeakError<T> {
 /// the choice to the user. This is not yet encapsulate in a safe API yet `Level` makes it easy to
 /// reason about.
 ///
-/// See [`MemBump::get_unchecked`][crate::unsync::MemBump] for redeeming a value.
+/// See [`MemBump::get_unchecked`](`crate::bump::BumpSlice`) for redeeming a value.
 ///
 /// ## Unsound usage.
 ///
@@ -289,6 +289,13 @@ pub struct LeakError<T> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Level(pub(crate) usize);
 
+impl Level {
+    /// Get the byte offset with respect to the arena [`data_ptr`](`Bump::data_ptr`).
+    pub fn byte_offset(&self) -> usize {
+        self.0
+    }
+}
+
 /// A successful allocation and current [`Level`].
 ///
 /// [`Level`]: struct.Level.html
@@ -309,7 +316,44 @@ pub struct Allocation<'a, T: ?Sized = u8> {
     pub lifetime: AllocTime<'a>,
 
     /// The observed amount of consumed bytes after the allocation.
+    ///
+    /// For `Bump` this is precise, i.e. the offset of the `ptr` in the arena data is the level's
+    /// byte offset minus the layout size.
     pub level: Level,
+}
+
+impl<T> Allocation<'_, T> {
+    /// Get the `Level` at which the allocation starts.
+    ///
+    /// This can be used as the level of [`Bump::get_unchecked`] with the arena it as allocated
+    /// from. There is an equivalent method for some unsized types.
+    ///
+    /// # Usage
+    ///
+    /// ```
+    /// use static_alloc::Bump;
+    ///
+    /// let arena = Bump::<[u32; 4]>::uninit();
+    /// let alloc = arena.get::<u32>().unwrap();
+    ///
+    /// assert_eq!(alloc.level.byte_offset(), 4);
+    /// assert_eq!(alloc.level_start().byte_offset(), 0);
+    /// ```
+    pub fn level_start(&self) -> Level {
+        Level(self.level.byte_offset() - mem::size_of::<T>())
+    }
+}
+
+impl<T> Allocation<'_, [T]> {
+    /// Get the `Level` at which the allocation starts.
+    ///
+    /// This can be used as the level of [`Bump::get_unchecked`] with the arena it as allocated
+    /// from. There is an equivalent method for some unsized types.
+    ///
+    /// See the sized [`Allocation::level_start`].
+    pub fn level_start(&self) -> Level {
+        Level(self.level.byte_offset() - mem::size_of::<T>() * self.ptr.len())
+    }
 }
 
 /// Reason for a failed allocation at an exact [`Level`].
@@ -670,9 +714,7 @@ impl<T> Bump<T> {
 
     /// Get an allocation for a specific type at a specific level.
     ///
-    /// See [`get`] for usage.
-    ///
-    /// [`get`]: #method.get
+    /// See [`get`](`Self::get`) for usage.
     pub fn get_at<V>(&self, level: Level) -> Result<Allocation<'_, V>, Failure> {
         self.as_view().get_at(level)
     }
@@ -806,7 +848,7 @@ impl<T> Bump<T> {
     /// # Safety
     ///
     /// - The level must refer to an existing allocation, i.e. it must previously have been
-    ///   returned in [`Allocation::level`].
+    ///   returned in [`Allocation::level_start`].
     /// - As a corollary, particular it must be in-bounds of the allocator's memory.
     /// - Another consequence, the result pointer must be aligned for the requested type.
     pub unsafe fn get_unchecked<V>(&self, level: Level) -> Allocation<'_, V> {
@@ -831,7 +873,7 @@ impl<T> Bump<T> {
     /// It is important to understand that it is undefined behaviour to reuse the allocation for
     /// the *whole lifetime* of the returned reference. That is, dropping the allocation in-place
     /// while the reference is still within its lifetime comes with the exact same unsafety caveats
-    /// as [`ManuallyDrop::drop`].
+    /// as [`ManuallyDrop::drop`](`core::mem::ManuallyDrop::drop`).
     ///
     /// ```
     /// # use static_alloc::Bump;
@@ -870,7 +912,6 @@ impl<T> Bump<T> {
     /// the allocated region.
     ///
     /// [`ptr::slice_from_raw_parts`]: https://github.com/rust-lang/rust/issues/36925
-    /// [`ManuallyDrop::drop`]: https://doc.rust-lang.org/beta/std/mem/struct.ManuallyDrop.html#method.drop
     ///
     /// TODO: will be deprecated sooner or later in favor of a method that does not move the
     /// resource on failure.
@@ -1402,7 +1443,7 @@ impl BumpSlice {
 
 impl<'lt> BumpView<'lt> {
     pub fn alloc(self, layout: Layout) -> Option<NonNull<u8>> {
-        Some(self.try_alloc(layout)?.ptr)
+        Some(self.try_alloc(layout).ok()?.ptr)
     }
 
     pub fn alloc_at(self, layout: Layout, level: Level) -> Result<Allocation<'lt>, Failure> {
@@ -1420,7 +1461,7 @@ impl<'lt> BumpView<'lt> {
     }
 
     pub fn get_layout(self, layout: Layout) -> Option<Allocation<'lt>> {
-        self.try_alloc(layout)
+        self.try_alloc(layout).ok()
     }
 
     pub fn get_layout_at(self, layout: Layout, at: Level) -> Result<Allocation<'lt>, Failure> {
@@ -1437,7 +1478,7 @@ impl<'lt> BumpView<'lt> {
             ptr,
             lifetime,
             level,
-        } = self.try_alloc(layout)?;
+        } = self.try_alloc(layout).ok()?;
 
         Some(Allocation {
             ptr: ptr.cast(),
@@ -1541,13 +1582,23 @@ impl<'lt> BumpView<'lt> {
     }
 
     // FIXME: should take `NonZeroLayout`.
-    fn try_alloc(self, layout: Layout) -> Option<Allocation<'lt>> {
-        // Guess zero, this will fail when we try to access it and it isn't.
-        let mut consumed = 0;
+    pub(crate) fn try_alloc(self, layout: Layout) -> Result<Allocation<'lt>, Level> {
+        // Guess the current level, this will fail when we try to access it and it isn't.
+        let mut consumed = self.level().0;
+        // FIXME: parts of the initial computation depends mostly on `layout` and `storage`, i.e.
+        // not on the current level. It's not verified if LLVM moves these out of the loop and it's
+        // doubtful since there's a CAS within it (`self.bump`). Rewrite to avoid this, e.g. a
+        // 'qualified layout` type filled with specifics to our storage? Especially since we align
+        // upwards which isn't a simple AND. However, calculating the last possible end-location and
+        // then the last possible start, and then a simpler comparison would be.
+        //
+        // Speaking of this might motivate changing to storing the number of bytes left instead of
+        // the number of bytes consumed. Then we have again an AND boundary with an addition for the
+        // CAS update.
         loop {
             match self.try_alloc_at(layout, consumed) {
-                Ok(alloc) => return Some(alloc),
-                Err(Failure::Exhausted) => return None,
+                Ok(alloc) => return Ok(alloc),
+                Err(Failure::Exhausted) => return Err(Level(consumed)),
                 Err(Failure::Mismatch { observed }) => consumed = observed.0,
             }
         }

@@ -47,8 +47,9 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
+/// Specialized types for `allocator-api2` (the planned std allocator).
 #[cfg(feature = "allocator-api2")]
-mod allocator_api2;
+pub mod allocator_api2;
 
 pub mod bump;
 pub use bump::Bump;
