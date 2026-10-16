@@ -188,8 +188,10 @@ impl<'lt, A: ?Sized> AllocatorStats<'lt, A> {
     /// Wrap an arena to gather stats.
     ///
     /// This does not constrain the type `A`. However, it can only be sensibly used with a
-    /// [`Bump`](`crate::bump::Bump`) or [`Bump`](`crate::unsync::Bump`) and their type erased
-    /// slices.
+    /// [`Bump`](`crate::bump::Bump`) or [`BumpSlice`](`crate::bump::BumpSlice`) or the unsync
+    /// [`BumpSlice`](`crate::unsync::BumpSlice`). It does *not* work with unsync's `Bump` due to
+    /// current design differences. (It is implemented with Deref into a `BumpSlice` instead of a
+    /// view used for both. This will post-monomorphization error which we do not want to hide).
     pub fn new(arena: &'lt A) -> Self {
         AllocatorStats {
             allocation: cell::Cell::new(Level(0)),
@@ -278,6 +280,65 @@ unsafe impl<T> Allocator for AllocatorStats<'_, Bump<T>> {
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         let len = layout.size();
         match self.inner.as_view().try_alloc(layout) {
+            Ok(allocation) => {
+                self.allocation.set(Level(allocation.level.0 - len));
+                self.observed_level.set(allocation.level);
+                Ok(NonNull::slice_from_raw_parts(allocation.ptr, len))
+            }
+            Err(level) => {
+                self.observed_level.set(level);
+                Err(AllocError)
+            }
+        }
+    }
+
+    unsafe fn deallocate(&self, _: NonNull<u8>, _: Layout) {}
+
+    unsafe fn shrink(
+        &self,
+        ptr: NonNull<u8>,
+        old_layout: Layout,
+        new_layout: Layout,
+    ) -> Result<NonNull<[u8]>, AllocError> {
+        // Safety: forwarding arguments, i.e  requirements, to an equivalent allocator.
+        unsafe { Allocator::shrink(&self.inner, ptr, old_layout, new_layout) }
+    }
+}
+
+unsafe impl Allocator for AllocatorStats<'_, BumpSlice> {
+    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        let len = layout.size();
+        match self.inner.as_view().try_alloc(layout) {
+            Ok(allocation) => {
+                self.allocation.set(Level(allocation.level.0 - len));
+                self.observed_level.set(allocation.level);
+                Ok(NonNull::slice_from_raw_parts(allocation.ptr, len))
+            }
+            Err(level) => {
+                self.observed_level.set(level);
+                Err(AllocError)
+            }
+        }
+    }
+
+    unsafe fn deallocate(&self, _: NonNull<u8>, _: Layout) {}
+
+    unsafe fn shrink(
+        &self,
+        ptr: NonNull<u8>,
+        old_layout: Layout,
+        new_layout: Layout,
+    ) -> Result<NonNull<[u8]>, AllocError> {
+        // Safety: forwarding arguments, i.e  requirements, to an equivalent allocator.
+        unsafe { Allocator::shrink(&self.inner, ptr, old_layout, new_layout) }
+    }
+}
+
+// Not implemented for `unsync::Bump<T>` due to having to deref internally then.
+unsafe impl Allocator for AllocatorStats<'_, unsync::BumpSlice> {
+    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        let len = layout.size();
+        match self.inner.try_alloc(layout) {
             Ok(allocation) => {
                 self.allocation.set(Level(allocation.level.0 - len));
                 self.observed_level.set(allocation.level);

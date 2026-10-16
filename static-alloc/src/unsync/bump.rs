@@ -346,7 +346,7 @@ impl BumpSlice {
     ///
     /// FIXME(breaking): this could well be a `Result<_, Failure>`.
     pub fn alloc(&self, layout: Layout) -> Option<NonNull<u8>> {
-        Some(self.try_alloc(layout)?.ptr)
+        Some(self.try_alloc(layout).ok()?.ptr)
     }
 
     /// Try to allocate some layout with a precise base location.
@@ -386,7 +386,7 @@ impl BumpSlice {
     ///
     /// FIXME(breaking): this could well be a `Result<_, Failure>`.
     pub fn get<V>(&self) -> Option<Allocation<'_, V>> {
-        let alloc = self.try_alloc(Layout::new::<V>())?;
+        let alloc = self.try_alloc(Layout::new::<V>()).ok()?;
         Some(Allocation {
             lifetime: alloc.lifetime,
             level: alloc.level,
@@ -558,11 +558,12 @@ impl BumpSlice {
         self.header.index.set(0)
     }
 
-    fn try_alloc(&self, layout: Layout) -> Option<Allocation<'_>> {
+    pub(crate) fn try_alloc(&self, layout: Layout) -> Result<Allocation<'_>, Level> {
         let consumed = self.header.index.get();
         match self.try_alloc_at(layout, consumed) {
-            Ok(alloc) => Some(alloc),
-            Err(Failure::Exhausted) => None,
+            Ok(alloc) => Ok(alloc),
+            // Cell can not be concurrently updated within this method, type is not Sync.
+            Err(Failure::Exhausted) => Err(Level(consumed)),
             Err(Failure::Mismatch { observed: _ }) => {
                 unreachable!("Count in Cell concurrently modified, this UB")
             }
