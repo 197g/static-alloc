@@ -1,3 +1,15 @@
+# v0.3.3
+
+Expect this to be the last version before requiring rust-version 1.100 (the
+expected feature stabilization for the allocator trait).
+
+Feature changes:
+- Added `allocator_api2::WithAllocationInfo`, a by-reference adapter equivalent
+  to its inner allocator that retains information about the base address and
+  remaining arena space when allocations are performed via its `Allocator`
+  impls. This enables access to this type-specific data even when used as a
+  generic trait instance which happens especially with standard containers.
+
 # v0.3.2
 
 Structural:
