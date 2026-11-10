@@ -15,8 +15,8 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(feature = "polyfill")]
 use portable_atomic::{AtomicUsize, Ordering};
 
-use crate::leaked::LeakBox;
-use alloc_traits::{AllocTime, LocalAlloc, NonZeroLayout};
+use crate::{AllocTime, leaked::LeakBox};
+use alloc_traits::{LocalAlloc, NonZeroLayout};
 
 /// Allocator drawing from an inner, statically sized memory resource.
 ///

@@ -1,3 +1,12 @@
+# v0.4.0
+
+Structural:
+- The `allocator_api2` feature is removed as its functionality is now part of `alloc`.
+- The `alloc-traits` dependency is now marked as optional, but still required
+  for successful compilation. The crate is partly superseded by Rust 1.100 and
+  its functionality will be brought into this crate in a way that is not
+  exposed in the public API.
+
 # v0.3.3
 
 Expect this to be the last version before requiring rust-version 1.100 (the

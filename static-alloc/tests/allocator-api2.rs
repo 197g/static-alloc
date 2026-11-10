@@ -1,4 +1,4 @@
-use allocator_api2 as astd;
+use alloc as astd;
 use static_alloc::{Bump, unsync};
 
 #[test]

@@ -3,7 +3,7 @@ use crate::{
     unsync,
 };
 
-use allocator_api2::alloc::{AllocError, Allocator, Layout};
+use alloc::alloc::{AllocError, Allocator, Layout};
 use core::{cell, ptr::NonNull};
 
 unsafe impl<T> Allocator for Bump<T> {

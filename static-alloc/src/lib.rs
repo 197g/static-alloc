@@ -44,11 +44,14 @@
 #![no_std]
 #![deny(missing_docs)]
 
+#[cfg(not(feature = "alloc-traits"))]
+compile_error!("The `alloc-traits` feature is required for this crate to work");
+
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
 /// Specialized types for `allocator-api2` (the planned std allocator).
-#[cfg(feature = "allocator-api2")]
+#[cfg(feature = "alloc")]
 pub mod allocator_api2;
 
 pub mod bump;
@@ -73,6 +76,9 @@ macro_rules! insert_as_doc {
         #[doc = $content] pub mod $name { }
     }
 }
+
+#[derive(Clone, Copy, Default)]
+pub struct AllocTime<'lt>(alloc_traits::AllocTime<'lt>);
 
 /// A module containing extended documentation and examples.
 #[cfg(doc)]
