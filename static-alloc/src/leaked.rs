@@ -105,7 +105,9 @@ impl<T> Alloca<T> {
 /// Represents an allocation within a Bump.
 ///
 /// This is an owning pointer comparable to `Box`. It drops the contained value when it is dropped
-/// itself. The difference is that no deallocation logic is ever executed.
+/// itself. The difference is that no deallocation logic is ever executed. This is very similar to
+/// `alloc::boxed::Box<T, &'ctx BumpSlice>` but the allocator type can be completely erased. It can
+/// be converted from such boxes when the `alloc` feature is enabled.
 ///
 /// FIXME(non-breaking): the name can be rather confusing. Maybe it should be `BumpBox` or `RefBox`?
 /// Not `StackBox` because the value's location in memory is not the defining feature.
@@ -542,6 +544,36 @@ impl<'ctx, T> From<&'ctx mut [MaybeUninit<T>]> for LeakBox<'ctx, [MaybeUninit<T>
         // * Dropping a MaybeUninit is a no-op and can not invalidate any validity or security
         //   invariants of this MaybeUninit or the contained T.
         unsafe { LeakBox::from_raw(uninit) }
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl<'ctx, T: ?Sized> From<alloc::boxed::Box<T, &'ctx crate::bump::BumpSlice>> for LeakBox<'ctx, T> {
+    fn from(boxed: alloc::boxed::Box<T, &'ctx crate::bump::BumpSlice>) -> Self {
+        // SAFETY:
+        // * The Box type guarantees this is initialized and not aliased.
+        let (ptr, _allocator) = alloc::boxed::Box::into_raw_with_allocator(boxed);
+        unsafe { LeakBox::from_raw(ptr) }
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl<'ctx, T: ?Sized, U> From<alloc::boxed::Box<T, &'ctx crate::bump::Bump<U>>> for LeakBox<'ctx, T> {
+    fn from(boxed: alloc::boxed::Box<T, &'ctx crate::bump::Bump<U>>) -> Self {
+        // SAFETY:
+        // * The Box type guarantees this is initialized and not aliased.
+        let (ptr, _allocator) = alloc::boxed::Box::into_raw_with_allocator(boxed);
+        unsafe { LeakBox::from_raw(ptr) }
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl<'ctx, T: ?Sized> From<alloc::boxed::Box<T, &'ctx crate::unsync::BumpSlice>> for LeakBox<'ctx, T> {
+    fn from(boxed: alloc::boxed::Box<T, &'ctx crate::unsync::BumpSlice>) -> Self {
+        // SAFETY:
+        // * The Box type guarantees this is initialized and not aliased.
+        let (ptr, _allocator) = alloc::boxed::Box::into_raw_with_allocator(boxed);
+        unsafe { LeakBox::from_raw(ptr) }
     }
 }
 
