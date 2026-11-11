@@ -7,6 +7,16 @@ Structural:
   its functionality will be brought into this crate in a way that is not
   exposed in the public API.
 
+Feature changes:
+- Added `From` impls for `LeakBox` to convert an `Box` from the standard
+  `alloc` crate when they are allocated via handles from this crate.
+- Added `From` impls for `LeakBox` to convert a `Vec` from the standard `alloc`
+  crate when they are allocated via handles from this crate into a boxed slice.
+  This will never reallocate and forget about the extraneous capacity. Only the
+  length is captured.
+- Added `AllocTime` as a wrapper around the `alloc-traits` type of the same
+  name to disentangle this public dependency surface.
+
 # v0.3.3
 
 Expect this to be the last version before requiring rust-version 1.100 (the
