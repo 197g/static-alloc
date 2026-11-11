@@ -15,7 +15,7 @@ fn local_vector() {
         "Reserved more space than available"
     );
 
-    let _ = v.push_within_capacity(0);
+    let _ = v.as_mut_slice();
     assert!(v.capacity() <= 128);
 }
 
@@ -33,6 +33,6 @@ fn unsync_vector() {
         "Reserved more space than available"
     );
 
-    let _ = v.push_within_capacity(0);
+    let _ = v.as_mut_slice();
     assert!(v.capacity() <= 128);
 }

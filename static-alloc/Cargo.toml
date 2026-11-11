@@ -58,4 +58,4 @@ required-features = ["nightly_chain"]
 [[test]]
 name = "allocator-api2"
 path = "tests/allocator-api2.rs"
-required-features = ["allocator-api2"]
+required-features = ["alloc"]

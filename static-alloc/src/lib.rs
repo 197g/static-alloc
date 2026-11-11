@@ -77,7 +77,17 @@ macro_rules! insert_as_doc {
     }
 }
 
-#[derive(Clone, Copy, Default)]
+/// Denotes the borrow of an allocator, the maximum validity of an [`Allocation`](`bump::Allocation`).
+///
+/// This is a zero-sized type with no runtime semantics. It exists so that the borrow relationship
+/// can be denoted in the type system (where we otherwise have raw pointers with no lifetime) and
+/// you can consequently enforce it to be verified by the borrow checker. When your use of the
+/// allocation does not maintain a borrow from the allocator in the same scope, you need to maintain
+/// the correctness yourself. You can use [`AllocTime::default()`] to recreate that assertion to
+/// APIs that require it.
+///
+/// See also [`Allocation`](`bump::Allocation`) and [`LeakBox`](`leaked::LeakBox`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct AllocTime<'lt>(alloc_traits::AllocTime<'lt>);
 
 /// A module containing extended documentation and examples.
