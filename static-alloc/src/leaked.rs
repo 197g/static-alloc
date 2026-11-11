@@ -548,7 +548,9 @@ impl<'ctx, T> From<&'ctx mut [MaybeUninit<T>]> for LeakBox<'ctx, [MaybeUninit<T>
 }
 
 #[cfg(feature = "alloc")]
-impl<'ctx, T: ?Sized> From<alloc::boxed::Box<T, &'ctx crate::bump::BumpSlice>> for LeakBox<'ctx, T> {
+impl<'ctx, T: ?Sized> From<alloc::boxed::Box<T, &'ctx crate::bump::BumpSlice>>
+    for LeakBox<'ctx, T>
+{
     fn from(boxed: alloc::boxed::Box<T, &'ctx crate::bump::BumpSlice>) -> Self {
         // SAFETY:
         // * The Box type guarantees this is initialized and not aliased.
@@ -558,7 +560,9 @@ impl<'ctx, T: ?Sized> From<alloc::boxed::Box<T, &'ctx crate::bump::BumpSlice>> f
 }
 
 #[cfg(feature = "alloc")]
-impl<'ctx, T: ?Sized, U> From<alloc::boxed::Box<T, &'ctx crate::bump::Bump<U>>> for LeakBox<'ctx, T> {
+impl<'ctx, T: ?Sized, U> From<alloc::boxed::Box<T, &'ctx crate::bump::Bump<U>>>
+    for LeakBox<'ctx, T>
+{
     fn from(boxed: alloc::boxed::Box<T, &'ctx crate::bump::Bump<U>>) -> Self {
         // SAFETY:
         // * The Box type guarantees this is initialized and not aliased.
@@ -568,12 +572,76 @@ impl<'ctx, T: ?Sized, U> From<alloc::boxed::Box<T, &'ctx crate::bump::Bump<U>>> 
 }
 
 #[cfg(feature = "alloc")]
-impl<'ctx, T: ?Sized> From<alloc::boxed::Box<T, &'ctx crate::unsync::BumpSlice>> for LeakBox<'ctx, T> {
+impl<'ctx, T: ?Sized> From<alloc::boxed::Box<T, &'ctx crate::unsync::BumpSlice>>
+    for LeakBox<'ctx, T>
+{
     fn from(boxed: alloc::boxed::Box<T, &'ctx crate::unsync::BumpSlice>) -> Self {
         // SAFETY:
         // * The Box type guarantees this is initialized and not aliased.
         let (ptr, _allocator) = alloc::boxed::Box::into_raw_with_allocator(boxed);
         unsafe { LeakBox::from_raw(ptr) }
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl<'ctx, T: ?Sized, U> From<alloc::boxed::Box<T, &'ctx crate::unsync::Bump<U>>>
+    for LeakBox<'ctx, T>
+{
+    fn from(boxed: alloc::boxed::Box<T, &'ctx crate::unsync::Bump<U>>) -> Self {
+        // SAFETY:
+        // * The Box type guarantees this is initialized and not aliased.
+        let (ptr, _allocator) = alloc::boxed::Box::into_raw_with_allocator(boxed);
+        unsafe { LeakBox::from_raw(ptr) }
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl<'ctx, T> From<alloc::vec::Vec<T, &'ctx crate::bump::BumpSlice>> for LeakBox<'ctx, [T]> {
+    fn from(boxed: alloc::vec::Vec<T, &'ctx crate::bump::BumpSlice>) -> Self {
+        let (ptr, len, _cap, _allocator) = alloc::vec::Vec::into_raw_parts_with_allocator(boxed);
+        let slice = core::ptr::slice_from_raw_parts_mut(ptr, len);
+        // SAFETY:
+        // * The Vec guarantees that all elements within its length are initialized and not aliased.
+        unsafe { LeakBox::from_raw(slice) }
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl<'ctx, T, U> From<alloc::vec::Vec<T, &'ctx crate::bump::Bump<U>>>
+    for LeakBox<'ctx, [T]>
+{
+    fn from(boxed: alloc::vec::Vec<T, &'ctx crate::bump::Bump<U>>) -> Self {
+        let (ptr, len, _cap, _allocator) = alloc::vec::Vec::into_raw_parts_with_allocator(boxed);
+        let slice = core::ptr::slice_from_raw_parts_mut(ptr, len);
+        // SAFETY:
+        // * The Vec guarantees that all elements within its length are initialized and not aliased.
+        unsafe { LeakBox::from_raw(slice) }
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl<'ctx, T> From<alloc::vec::Vec<T, &'ctx crate::unsync::BumpSlice>>
+    for LeakBox<'ctx, [T]>
+{
+    fn from(boxed: alloc::vec::Vec<T, &'ctx crate::unsync::BumpSlice>) -> Self {
+        let (ptr, len, _cap, _allocator) = alloc::vec::Vec::into_raw_parts_with_allocator(boxed);
+        let slice = core::ptr::slice_from_raw_parts_mut(ptr, len);
+        // SAFETY:
+        // * The Vec guarantees that all elements within its length are initialized and not aliased.
+        unsafe { LeakBox::from_raw(slice) }
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl<'ctx, T, U> From<alloc::vec::Vec<T, &'ctx crate::unsync::Bump<U>>>
+    for LeakBox<'ctx, [T]>
+{
+    fn from(boxed: alloc::vec::Vec<T, &'ctx crate::unsync::Bump<U>>) -> Self {
+        let (ptr, len, _cap, _allocator) = alloc::vec::Vec::into_raw_parts_with_allocator(boxed);
+        let slice = core::ptr::slice_from_raw_parts_mut(ptr, len);
+        // SAFETY:
+        // * The Vec guarantees that all elements within its length are initialized and not aliased.
+        unsafe { LeakBox::from_raw(slice) }
     }
 }
 
