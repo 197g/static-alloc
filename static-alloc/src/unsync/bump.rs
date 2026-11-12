@@ -6,10 +6,11 @@ use core::{
     ptr::{self, NonNull},
 };
 
-use alloc_traits::AllocTime;
-
-use crate::bump::{Allocation, Failure, Level};
-use crate::leaked::LeakBox;
+use crate::{
+    AllocTime,
+    bump::{Allocation, Failure, Level},
+    leaked::LeakBox,
+};
 
 /// A bump allocator whose storage capacity and alignment is given by `T`.
 ///

@@ -1,5 +1,6 @@
-use allocator_api2 as astd;
-use static_alloc::{Bump, unsync};
+extern crate alloc;
+use alloc as astd;
+use static_alloc::{Bump, leaked::LeakBox, unsync};
 
 #[test]
 fn local_vector() {
@@ -15,7 +16,7 @@ fn local_vector() {
         "Reserved more space than available"
     );
 
-    let _ = v.push_within_capacity(0);
+    let _ = v.as_mut_slice();
     assert!(v.capacity() <= 128);
 }
 
@@ -33,6 +34,55 @@ fn unsync_vector() {
         "Reserved more space than available"
     );
 
-    let _ = v.push_within_capacity(0);
+    let _ = v.as_mut_slice();
     assert!(v.capacity() <= 128);
+}
+
+#[test]
+fn unsized_leak_box() {
+    let storage = Bump::<[u8; 128]>::uninit();
+    let boxed = astd::boxed::Box::new_in("look, a &str", &storage);
+    // `std`'s box is `Unsize` so we can coerce it to a `Box<dyn Display>` while retaining the
+    // allocator. Then that box can be readily converted into our own `LeakBox` to erase the
+    // allocator handle and type. This leaves us with a pure dyn-trait object pointer and its
+    // lifetime.
+    let _decay: LeakBox<'_, dyn core::fmt::Display> =
+        LeakBox::from(boxed as astd::boxed::Box<dyn core::fmt::Display, _>);
+}
+
+#[test]
+fn convert_leaked_vec() {
+    let storage = unsync::Bump::<[u8; 128]>::uninit();
+
+    let mut v = astd::vec::Vec::<u8, _>::with_capacity_in(64, &storage);
+    v.extend(0u8..32);
+    assert_eq!(v.len(), 32);
+    assert_eq!(v.capacity(), 64);
+
+    let leaked: LeakBox<'_, [u8]> = LeakBox::from(v);
+
+    assert_eq!(
+        leaked.len(),
+        32,
+        "Leak box only references initialized elements"
+    );
+
+    assert!(
+        leaked
+            .iter()
+            .enumerate()
+            .all(|(idx, &v)| idx == usize::from(v))
+    );
+}
+
+#[test]
+fn convert_empty_vec() {
+    let storage = unsync::Bump::<[u8; 128]>::uninit();
+    // This non-allocating vector won't necessarily use the pointer by the allocator. That's fine,
+    // let's just verify that this still works and that miri can catch soundness problems (e.g
+    // provenance being incorrect despite this being a zero-length region).
+    let v = astd::vec::Vec::<u8, _>::with_capacity_in(0, &storage);
+    assert_eq!(v.capacity(), 0);
+    let leaked: LeakBox<'_, [u8]> = LeakBox::from(v);
+    assert_eq!(leaked.len(), 0);
 }

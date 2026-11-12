@@ -15,8 +15,8 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(feature = "polyfill")]
 use portable_atomic::{AtomicUsize, Ordering};
 
-use crate::leaked::LeakBox;
-use alloc_traits::{AllocTime, LocalAlloc, NonZeroLayout};
+use crate::{AllocTime, leaked::LeakBox};
+use alloc_traits::{LocalAlloc, NonZeroLayout};
 
 /// Allocator drawing from an inner, statically sized memory resource.
 ///
@@ -763,7 +763,12 @@ impl<T> Bump<T> {
 
     /// Move a value into an owned allocation.
     ///
-    /// For safely initializing a value _after_ a successful allocation, see [`LeakBox::write`].
+    /// For safely initializing a value _after_ a successful allocation, allocate `MaybeUninit<T>`
+    /// instead and see [`LeakBox::write`]. This method only works with sized values as unsized type
+    /// can not be encapsulated into `MaybeUninit`. Instead, allocate an appropriately sized region
+    /// with [`Self::get_layout`], cast the pointer to imbue it with the correct metadata and
+    /// manually initialize the allocation. Then call [`LeakBox::from_raw`] once its safety
+    /// requirements are fulfilled.
     ///
     /// [`LeakBox::write`]: ../leaked/struct.LeakBox.html#method.write
     ///
@@ -1882,7 +1887,7 @@ unsafe impl GlobalAlloc for BumpView<'_> {
             // Safety: `ptr` is currently allocated via this allocator, i.e. non-null.
             ptr: unsafe { NonNull::new_unchecked(ptr) },
             layout: current,
-            lifetime: AllocTime::default(),
+            lifetime: alloc_traits::AllocTime::default(),
         };
 
         // Safety: satisfies our own invariants.
@@ -1912,7 +1917,7 @@ unsafe impl<'alloc, T> LocalAlloc<'alloc> for Bump<T> {
         Some(alloc_traits::Allocation {
             ptr: raw_alloc.ptr,
             layout,
-            lifetime: AllocTime::default(),
+            lifetime: alloc_traits::AllocTime::default(),
         })
     }
 
@@ -1965,7 +1970,7 @@ unsafe impl<'alloc> LocalAlloc<'alloc> for BumpView<'alloc> {
         Some(alloc_traits::Allocation {
             ptr: raw_alloc.ptr,
             layout,
-            lifetime: AllocTime::default(),
+            lifetime: alloc_traits::AllocTime::default(),
         })
     }
 

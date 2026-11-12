@@ -3,8 +3,11 @@ use crate::{
     unsync,
 };
 
-use allocator_api2::alloc::{AllocError, Allocator, Layout};
-use core::{cell, ptr::NonNull};
+use core::{
+    alloc::{AllocError, Allocator, Layout},
+    cell,
+    ptr::NonNull,
+};
 
 unsafe impl<T> Allocator for Bump<T> {
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
@@ -213,7 +216,6 @@ impl<A> WithAllocationInfo<A> {
     /// ```
     /// use static_alloc::allocator_api2::WithAllocationInfo;
     /// use static_alloc::bump::Bump;
-    /// use allocator_api2::vec::Vec;
     ///
     /// let arena =  Bump::<[usize; 4]>::uninit();
     /// let hdl = WithAllocationInfo::new(&arena);
@@ -236,7 +238,6 @@ impl<A> WithAllocationInfo<A> {
     /// ```
     /// use static_alloc::allocator_api2::WithAllocationInfo;
     /// use static_alloc::bump::Bump;
-    /// use allocator_api2::vec::Vec;
     ///
     /// let arena =  Bump::<[usize; 4]>::uninit();
     /// let hdl = WithAllocationInfo::new(&arena);
@@ -261,7 +262,6 @@ impl<A> WithAllocationInfo<A> {
     /// ```
     /// use static_alloc::allocator_api2::WithAllocationInfo;
     /// use static_alloc::bump::Bump;
-    /// use allocator_api2::vec::Vec;
     ///
     /// let arena =  Bump::<[usize; 4]>::uninit();
     /// let hdl = WithAllocationInfo::new(&arena);

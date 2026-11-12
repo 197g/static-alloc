@@ -1,3 +1,25 @@
+# v0.4.0
+
+Structural:
+- The `allocator_api2` feature is removed as its functionality is now part of
+  `core`. We implement the `core::alloc::Allocator` trait as part of the
+  unconditional public API. For historical reasons the module with adapters
+  will still be named `allocator_api2` for a while.
+- The `alloc-traits` dependency is now marked as optional, but still required
+  for successful compilation. The crate is partly superseded by Rust 1.100 and
+  its functionality will be brought into this crate in a way that is not
+  exposed in the public API.
+
+Feature changes:
+- Added `From` impls for `LeakBox` to convert an `Box` from the standard
+  `alloc` crate when they are allocated via handles from this crate.
+- Added `From` impls for `LeakBox` to convert a `Vec` from the standard `alloc`
+  crate when they are allocated via handles from this crate into a boxed slice.
+  This will never reallocate and forget about the extraneous capacity. Only the
+  length is captured.
+- Added `AllocTime` as a wrapper around the `alloc-traits` type of the same
+  name to disentangle this public dependency surface.
+
 # v0.3.3
 
 Expect this to be the last version before requiring rust-version 1.100 (the

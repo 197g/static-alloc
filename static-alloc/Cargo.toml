@@ -1,11 +1,11 @@
 [package]
 name = "static-alloc"
-version = "0.3.3"
+version = "0.4.0"
 description = "A bump allocator on static memory for the alloc-traits crate"
 edition = "2024"
 documentation = "https://docs.rs/static-alloc"
 categories = ["embedded", "memory-management", "no-std"]
-rust-version = "1.85"
+rust-version = "1.100"
 
 authors.workspace = true
 license.workspace = true
@@ -16,14 +16,20 @@ repository.workspace = true
 all-features = true
 
 [dependencies]
-alloc-traits = { path = "../alloc-traits", version = "0.1.0" }
+# Soft deprecated: currently some functionality is built on top of abstractions
+# in this crate but we're no longer recommending the main surface since the
+# `Allocator` trait was stabilized in `core` in Rust 1.100.
+alloc-traits = { path = "../alloc-traits", version = "0.1.0", optional = true }
 portable-atomic = { version = "1", optional = true, default-features = false }
-allocator-api2 = { version = "0.4", optional = true, default-features = false }
 
 [dev-dependencies]
-allocator-api2 = { version = "0.4", features = ["std"] }
 
 [features]
+# Required to build for now but intent to deprecate. Once we remove the hard
+# dependency on this we will recommend using no-default-features and remove
+# this from the default list in the next major release.
+default = ["alloc-traits"]
+# Provides interop for `alloc::{boxed::Box, vec::Vec}`.
 alloc = []
 # Enables the `unsync::Chain` module. Note that this is explicitly outside the
 # SemVer stability guarantees!
@@ -60,4 +66,4 @@ required-features = ["nightly_chain"]
 [[test]]
 name = "allocator-api2"
 path = "tests/allocator-api2.rs"
-required-features = ["allocator-api2"]
+required-features = ["alloc"]
