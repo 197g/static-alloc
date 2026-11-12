@@ -3,8 +3,11 @@ use crate::{
     unsync,
 };
 
-use alloc::alloc::{AllocError, Allocator, Layout};
-use core::{cell, ptr::NonNull};
+use core::{
+    alloc::{AllocError, Allocator, Layout},
+    cell,
+    ptr::NonNull,
+};
 
 unsafe impl<T> Allocator for Bump<T> {
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {

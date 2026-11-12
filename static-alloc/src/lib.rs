@@ -51,7 +51,6 @@ compile_error!("The `alloc-traits` feature is required for this crate to work");
 extern crate alloc;
 
 /// Specialized types for `allocator-api2` (the planned std allocator).
-#[cfg(feature = "alloc")]
 pub mod allocator_api2;
 
 pub mod bump;

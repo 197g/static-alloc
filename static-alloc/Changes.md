@@ -1,7 +1,10 @@
 # v0.4.0
 
 Structural:
-- The `allocator_api2` feature is removed as its functionality is now part of `alloc`.
+- The `allocator_api2` feature is removed as its functionality is now part of
+  `core`. We implement the `core::alloc::Allocator` trait as part of the
+  unconditional public API. For historical reasons the module with adapters
+  will still be named `allocator_api2` for a while.
 - The `alloc-traits` dependency is now marked as optional, but still required
   for successful compilation. The crate is partly superseded by Rust 1.100 and
   its functionality will be brought into this crate in a way that is not
